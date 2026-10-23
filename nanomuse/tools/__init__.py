@@ -1,6 +1,7 @@
 from nanomuse.tools.base import BaseTool, CallAssessment, ToolCollection, safe_execute
 from nanomuse.tools.browser import Browser, playwright_available
 from nanomuse.tools.calendar_tool import Calendar
+from nanomuse.tools.chats import CreateChat
 from nanomuse.tools.contacts_tool import Contacts
 from nanomuse.tools.email_tool import ReadEmails, SendEmail
 from nanomuse.tools.files import Files
@@ -18,6 +19,7 @@ __all__ = [
     "AskUser",
     "BaseTool",
     "Browser",
+    "CreateChat",
     "Calendar",
     "CallAssessment",
     "Contacts",

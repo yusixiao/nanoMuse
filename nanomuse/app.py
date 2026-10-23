@@ -34,6 +34,7 @@ from nanomuse.tools import (
     Browser,
     Calendar,
     Contacts,
+    CreateChat,
     Files,
     Forget,
     Goals,
@@ -333,6 +334,7 @@ class NanoMuseApp:
             tools.add(
                 Remember(store=self.memory), Recall(store=self.memory), Forget(store=self.memory)
             )
+        tools.add(CreateChat(service=None))  # service late-binds (MuseService.__init__)
         if s.connectors.email.enabled:
             tools.add(
                 ReadEmails(settings=s.connectors.email, vault=self.vault),

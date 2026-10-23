@@ -412,6 +412,9 @@ class MuseService:
             tool = self.app.tools.get(name)
             if tool is not None:
                 tool.bridge = self.bridge  # type: ignore[attr-defined]
+        chat_tool = self.app.tools.get("create_chat")
+        if chat_tool is not None:
+            chat_tool.service = self  # type: ignore[attr-defined]
         self.watch_browser()
         self._watch_reminders()
         self._mail_polled_at: float | None = None
