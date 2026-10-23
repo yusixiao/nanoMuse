@@ -25,6 +25,7 @@ class SessionsOffloadHandlerTest {
         ) { _, _, _ -> error("dao must not be touched on the validation path") }
         val handler = SessionsOffloadHandler(
             repo = ChatRepository(neverDao as com.openminis.app.data.db.ChatDao),
+            appContext = null,
         )
         val result = handler.handle(
             com.openminis.app.sandbox.NativeOffloadRequest(

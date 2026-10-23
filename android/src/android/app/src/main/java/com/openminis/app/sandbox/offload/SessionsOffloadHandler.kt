@@ -5,6 +5,7 @@ import com.openminis.app.logging.AppLogger
 import com.openminis.app.sandbox.NativeOffloadHandler
 import com.openminis.app.sandbox.NativeOffloadRequest
 import com.openminis.app.sandbox.NativeOffloadResult
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -36,6 +37,9 @@ import java.util.TimeZone
  */
 class SessionsOffloadHandler(
     private val repo: ChatRepository,
+    // Nullable only so JVM unit tests can exercise the argument-validation
+    // path without an Android Context; the headless dispatch never runs there.
+    private val appContext: android.content.Context?,
 ) : NativeOffloadHandler {
 
     override fun handle(request: NativeOffloadRequest): NativeOffloadResult {
@@ -178,12 +182,24 @@ class SessionsOffloadHandler(
         val partsJson = """[{"type":"text","value":${jsonQuote(text)}}]"""
         kotlinx.coroutines.runBlocking {
             repo.appendMessage(session.id, "user", partsJson)
-            // An assistant ack right after the seeded user turn keeps the tail
-            // out of the interrupted-shape detector (UNANSWERED_USER_TURN would
-            // otherwise show a spurious Resume banner on first open) — the turn
-            // itself runs when the chat is opened in the UI.
-            val ackParts = """[{"type":"text","value":${jsonQuote("(Seeded by the agent from the main chat. Open this chat and resume to start working on it.)")}}]"""
-            repo.appendMessage(session.id, "assistant", ackParts)
+        }
+        // Drive the first turn for real (same headless path as scheduled
+        // tasks): the user asked for work in this chat, and the tail must
+        // end with an agent reply, not an unanswered user turn. Fire and
+        // forget — the reply lands in the new chat, never in the main one.
+        val ctx = appContext ?: error("appContext missing; cannot dispatch headless turn")
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching {
+                com.openminis.app.debug.HeadlessChatRunner.prompt(
+                    context = ctx,
+                    sessionId = session.id,
+                    text = text,
+                    attachments = emptyList(),
+                    thinkingLevel = null,
+                    wait = false,
+                    timeoutMs = HEADLESS_TIMEOUT_MS,
+                )
+            }
         }
         val data = org.json.JSONObject()
             .put("chat_id", session.id)
@@ -191,8 +207,8 @@ class SessionsOffloadHandler(
             .put("seeded", true)
             .put(
                 "note",
-                "Session created with the first user message stored. The agent turn runs " +
-                    "when the chat is opened in the app UI (no LLM turn is started from the sandbox).",
+                "Session created and the first turn is running in the background " +
+                    "(headless). The reply lands in that chat; tell the user where it is.",
             )
         val ok = org.json.JSONObject()
             .put("ok", true)
@@ -351,6 +367,7 @@ class SessionsOffloadHandler(
         // iOS NOFF_EXIT_INVALID_ARGS — the shell convention is exit 2
         // for invalid CLI args, distinct from exit 1 for runtime errors.
         private const val EXIT_INVALID_ARGS = 2
+private const val HEADLESS_TIMEOUT_MS = 10L * 60 * 1000
 
         private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
             timeZone = TimeZone.getDefault()
