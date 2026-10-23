@@ -2,13 +2,37 @@ package com.openminis.app.offload
 
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.sandbox.offload.SessionsOffloadHandler
+import com.openminis.app.sandbox.offload.buildSideChatFirstMessage
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** JVM-level tests for the minis-sessions-cli argument surface (ADR: send). */
 class SessionsOffloadHandlerTest {
+
+    @Test
+    fun `side chat task is not just a repeated title`() {
+        val message = buildSideChatFirstMessage(
+            title = "Muse followup",
+            request = "Muse followup",
+        )
+
+        assertNotEquals("Muse followup", message)
+        assertTrue(message.contains("Muse followup"))
+        assertTrue(message.contains("latest"))
+    }
+
+    @Test
+    fun `side chat preserves an actionable handover request`() {
+        val request = "Research LGD Gaming's latest match results and summarize them."
+
+        assertEquals(
+            request,
+            buildSideChatFirstMessage("LGD followup", request),
+        )
+    }
 
     @Test
     fun `send without message is an invalid-args envelope`() {

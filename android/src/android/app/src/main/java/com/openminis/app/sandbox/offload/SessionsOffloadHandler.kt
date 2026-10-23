@@ -177,23 +177,19 @@ class SessionsOffloadHandler(
         val session = kotlinx.coroutines.runBlocking {
             repo.createSession(modelId = modelId, title = title)
         }
-        // One plain text part, the same shape ChatViewModel.buildUserPartsJson
-        // writes for an attachment-free message.
-        val partsJson = """[{"type":"text","value":${jsonQuote(text)}}]"""
-        kotlinx.coroutines.runBlocking {
-            repo.appendMessage(session.id, "user", partsJson)
-        }
+        val firstMessage = buildSideChatFirstMessage(title, text)
         // Drive the first turn for real (same headless path as scheduled
         // tasks): the user asked for work in this chat, and the tail must
         // end with an agent reply, not an unanswered user turn. Fire and
-        // forget — the reply lands in the new chat, never in the main one.
+        // forget. HeadlessChatRunner.prompt calls sendMessage(), which
+        // persists the user message itself; do not append it here as well.
         val ctx = appContext ?: error("appContext missing; cannot dispatch headless turn")
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             runCatching {
                 com.openminis.app.debug.HeadlessChatRunner.prompt(
                     context = ctx,
                     sessionId = session.id,
-                    text = text,
+                    text = firstMessage,
                     attachments = emptyList(),
                     thinkingLevel = null,
                     wait = false,
@@ -432,5 +428,22 @@ EXAMPLES:
   minis-sessions-cli messages --id <session_id> --full
   minis-sessions-cli messages --id <session_id> --offset 20 --limit 10
 """
+    }
+}
+
+/**
+ * A bare topic repeated as both title and first message is not an actionable
+ * request (and used to make the new chat search old sessions for context).
+ * Turn that shorthand into a direct research/follow-up task. A real handover
+ * message from main is already a brief, so preserve it verbatim.
+ */
+internal fun buildSideChatFirstMessage(title: String, request: String): String {
+    val cleanTitle = title.trim().ifBlank { "this topic" }
+    val cleanRequest = request.trim()
+    return if (cleanRequest.equals(cleanTitle, ignoreCase = true)) {
+        "Find the latest relevant information about $cleanTitle and provide a concise, " +
+            "useful update. Use current/public sources; do not search past chats to infer the task."
+    } else {
+        cleanRequest
     }
 }
