@@ -169,7 +169,7 @@ class SessionsOffloadHandler(
         // sandbox has no provider view, so resolve through the repo's last
         // known model or fall back to "unknown" (same fallback ChatViewModel
         // uses when no provider is visible).
-        val modelId = args.get("model")?.takeIf { it.isNotBlank() } ?: "unknown"
+        val modelId = args.get("model")?.takeIf { it.isNotBlank() } ?: "gemini-3.8-flash"
         val session = kotlinx.coroutines.runBlocking {
             repo.createSession(modelId = modelId, title = title)
         }
@@ -178,6 +178,12 @@ class SessionsOffloadHandler(
         val partsJson = """[{"type":"text","value":${jsonQuote(text)}}]"""
         kotlinx.coroutines.runBlocking {
             repo.appendMessage(session.id, "user", partsJson)
+            // An assistant ack right after the seeded user turn keeps the tail
+            // out of the interrupted-shape detector (UNANSWERED_USER_TURN would
+            // otherwise show a spurious Resume banner on first open) — the turn
+            // itself runs when the chat is opened in the UI.
+            val ackParts = """[{"type":"text","value":${jsonQuote("(Seeded by the agent from the main chat. Open this chat and resume to start working on it.)")}}]"""
+            repo.appendMessage(session.id, "assistant", ackParts)
         }
         val data = org.json.JSONObject()
             .put("chat_id", session.id)
