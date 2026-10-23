@@ -55,11 +55,12 @@ class SessionsOffloadHandler(
                 "list" -> cmdList(args)
                 "search" -> cmdSearch(args)
                 "messages" -> cmdMessages(args)
+                "send" -> cmdSend(args)
                 else -> {
                     val err = errorEnvelope(
                         sub,
                         "INVALID_ARGS",
-                        "Unknown command '$sub'. Valid: list, search, messages. " +
+                        "Unknown command '$sub'. Valid: list, search, messages, send. " +
                             "Use --help for details.",
                     )
                     NativeOffloadResult(
@@ -148,6 +149,55 @@ class SessionsOffloadHandler(
             .put("messages", msgs)
         return emit("search", data, args)
     }
+
+    private fun cmdSend(args: OffloadArgs): NativeOffloadResult {
+        val text = args.get("message")?.takeIf { it.isNotBlank() }
+            ?: run {
+                val err = errorEnvelope(
+                    "send",
+                    "INVALID_ARGS",
+                    "--message <text> is required (the first user message of the new chat).",
+                )
+                return NativeOffloadResult(
+                    EXIT_INVALID_ARGS,
+                    OffloadOutput.formatBody(err.toString(2), args) + "\n" + HELP_TEXT,
+                )
+            }
+        val title = args.get("title")?.takeIf { it.isNotBlank() }
+            ?: text.take(40).trim()
+        // The row's modelId follows the caller's default-model chain; the
+        // sandbox has no provider view, so resolve through the repo's last
+        // known model or fall back to "unknown" (same fallback ChatViewModel
+        // uses when no provider is visible).
+        val modelId = args.get("model")?.takeIf { it.isNotBlank() } ?: "unknown"
+        val session = kotlinx.coroutines.runBlocking {
+            repo.createSession(modelId = modelId, title = title)
+        }
+        // One plain text part, the same shape ChatViewModel.buildUserPartsJson
+        // writes for an attachment-free message.
+        val partsJson = """[{"type":"text","value":${jsonQuote(text)}}]"""
+        kotlinx.coroutines.runBlocking {
+            repo.appendMessage(session.id, "user", partsJson)
+        }
+        val data = org.json.JSONObject()
+            .put("chat_id", session.id)
+            .put("title", title)
+            .put("seeded", true)
+            .put(
+                "note",
+                "Session created with the first user message stored. The agent turn runs " +
+                    "when the chat is opened in the app UI (no LLM turn is started from the sandbox).",
+            )
+        val ok = org.json.JSONObject()
+            .put("ok", true)
+            .put("tool", "minis-sessions-cli")
+            .put("action", "send")
+            .put("data", data)
+        return NativeOffloadResult(0, OffloadOutput.formatBody(ok.toString(2), args) + "\n")
+    }
+
+    private fun jsonQuote(s: String): String =
+        org.json.JSONObject.quote(s)
 
     private fun cmdMessages(args: OffloadArgs): NativeOffloadResult {
         val sessionId = args.get("id")?.takeIf { it.isNotBlank() }
@@ -309,12 +359,17 @@ COMMANDS:
   list      List recent sessions (default: 50, max: 100)
   search    Search message content across sessions (requires --keywords)
   messages  Read messages from a specific session (requires --id)
+  send      Create a new session with a first user message
+            (requires --message; optional --title, --model)
 
 OPTIONS:
   --keywords <words>    Space-separated keywords (AND logic, required for search)
   --ids <id1,id2,...>   Filter by comma-separated session IDs (list/search)
   --id <session_id>     Session ID to read messages from (messages)
   --full                (messages only) Return full message text up to 50000 chars
+  --message <text>      (send) First user message of the new session
+  --title <text>        (send) Session title; defaults to first 40 chars of --message
+  --model <id>          (send) Model id recorded on the session row; default "unknown"
   --offset <n>          Skip first n messages, 0-based (default: 0)
   --start <YYYY-MM-DD>  Filter results after this date (inclusive)
   --end <YYYY-MM-DD>    Filter results before this date (inclusive, end of day)
