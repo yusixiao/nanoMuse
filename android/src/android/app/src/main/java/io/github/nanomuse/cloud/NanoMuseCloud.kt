@@ -46,7 +46,7 @@ import org.json.JSONObject
  * content is forwarded to the model, not stored. See `docs/cloud.md`.
  */
 object NanoMuseCloud {
-    const val DEFAULT_BASE = "http://10.0.2.2:8000"  // muse gateway (dev)
+    const val DEFAULT_BASE = "https://165.22.56.120.sslip.io"  // muse gateway (DO droplet, sgp1)
     const val LABEL = "nanoMuse Cloud"
 
     private const val PREFS = "nanomuse"
