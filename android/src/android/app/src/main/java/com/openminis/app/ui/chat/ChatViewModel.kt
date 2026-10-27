@@ -12695,7 +12695,9 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                                 imageFilePath = imgPath,
                                 // [T-android-gemini3-thoughtsig / #179] Restore the
                                 // persisted signature onto the rebuilt block.
-                                thoughtSignature = value.optString("thoughtSignature", "").ifEmpty { null },
+                                // nanoMuse: optString maps JSON null to "null".
+                                thoughtSignature = value.optString("thoughtSignature", "")
+                                    .takeIf { it.isNotEmpty() && it != "null" },
                             ))
                         }
                         "mediaRef" -> {
@@ -12871,7 +12873,11 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                             // [T-android-gemini3-thoughtsig / #179] Restore the
                             // persisted Gemini 3.x signature so a reloaded session
                             // replays it (else the next gemini-3 turn 400s).
-                            thoughtSignature = v.optString("thoughtSignature", "").ifEmpty { null },
+                            // nanoMuse: optString maps a JSON null to the LITERAL
+                            // "null" string, which Vertex then rejects ("Invalid
+                            // thought signature"). Treat "null" as absent.
+                            thoughtSignature = v.optString("thoughtSignature", "")
+                                .takeIf { it.isNotEmpty() && it != "null" },
                         ))
                     }
                     "toolResult" -> {

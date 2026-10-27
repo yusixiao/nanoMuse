@@ -2099,7 +2099,11 @@ class OpenAIProvider private constructor(
                                 // it the gateway degrades every historical tool call
                                 // to "[calling tool: …]" text, and the model then
                                 // imitates text instead of emitting real tool calls.
-                                tu.thoughtSignature?.let { tcObj.put("thought_signature", it) }
+                                // nanoMuse: "null" can leak in from a JSON-null
+                                // persisted via optString; Vertex rejects it as
+                                // an invalid signature, so treat it as absent.
+                                tu.thoughtSignature?.takeIf { it != "null" }
+                                    ?.let { tcObj.put("thought_signature", it) }
                                 toolCallsArr.put(tcObj)
                             }
                             obj.put("tool_calls", toolCallsArr)
