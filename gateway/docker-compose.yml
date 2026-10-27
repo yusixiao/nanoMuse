@@ -1,0 +1,55 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      TG_PROXY_TOKEN: ${TG_PROXY_TOKEN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - gateway
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      GATEWAY_SA_FILE: /run/sa/credentials.json
+      GATEWAY_PROJECT: ${GATEWAY_PROJECT}
+      GATEWAY_MODEL: ${GATEWAY_MODEL:-gemini-3.8-flash}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN}
+    volumes:
+      - ./sa/credentials.json:/run/sa/credentials.json:ro
+    expose:
+      - "8000"
+
+  telegram-mcp:
+    build:
+      context: /opt/telegram-mcp
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8080"
+      # telegram-mcp's DNS-rebinding guard checks the Host header; Caddy
+      # forwards the public one, so it must be on the allow-list.
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost}
+      TELEGRAM_API_ID: ${TG_API_ID:-}
+      TELEGRAM_API_HASH: ${TG_API_HASH:-}
+      TELEGRAM_SESSION_STRING: ${TG_SESSION:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TG_ALLOWED_CHAT_IDS:-}
+      TELEGRAM_EXPOSED_TOOLS: ${TG_EXPOSED_TOOLS:-all}
+    expose:
+      - "8080"
+
+volumes:
+  caddy_data:
+  caddy_config:

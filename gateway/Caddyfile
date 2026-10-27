@@ -1,0 +1,30 @@
+# nanoMuse gateway edge. Site address is the public hostname — with a real
+# DNS name Caddy fetches and renews a Let's Encrypt certificate on its own;
+# a bare IP cannot (self-signed is rejected by LibreSSL and BoringSSL).
+# Deploy: cp Caddyfile + compose to the box, set .env, `docker compose up -d`.
+
+https://165.22.56.120.sslip.io {
+	# --- LLM gateway (OpenAI-compatible) ---
+	handle /v1/* {
+		reverse_proxy gateway:8000
+	}
+	handle /health* {
+		reverse_proxy gateway:8000
+	}
+
+	# --- telegram-mcp (streamable HTTP at /mcp) ---
+	@tg path /mcp*
+	handle @tg {
+		@ok header Authorization "Bearer {env.TG_PROXY_TOKEN}"
+		handle @ok {
+			reverse_proxy telegram-mcp:8080
+		}
+		respond 401
+	}
+
+	respond "Not Found" 404
+}
+
+http://165.22.56.120.sslip.io:80 {
+	respond "use HTTPS" 400
+}

@@ -76,3 +76,4 @@ uv.lock
 
 # nanoMuse Cloud relay runtime data
 cloud/data/
+gateway/sa/
