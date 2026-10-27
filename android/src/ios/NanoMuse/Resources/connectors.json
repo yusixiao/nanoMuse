@@ -282,8 +282,8 @@
       "docs": "https://github.com/chigwell/telegram-mcp",
       "color": "#2AABEE",
       "about": {
-        "en": "Read and send messages as your own account, via your self-hosted gateway.",
-        "zh": "通过你自托管网关，以本人身份读写消息、总结对话。"
+        "en": "Read and send messages as your own account, via your self-hosted gateway. Call it with: minis-mcp-cli call telegram <tool> --input '{\"chat_id\": 123, \"limit\": 20}'",
+        "zh": "通过你自托管网关，以本人身份读写消息、总结对话。调用方式：minis-mcp-cli call telegram <工具名> --input '{\"chat_id\": 123, \"limit\": 20}'"
       }
     },
     {

@@ -213,11 +213,14 @@ class PersistentShell(
         val debugOffload = com.openminis.app.BuildConfig.DEBUG
 
         val processBuilder = ProcessBuilder(cmd)
-        // In debug builds we want proot's native_offload stderr logs in
-        // logcat, not merged into shell stdout (which would break the
-        // __MINIS_DONE__ marker detection). Release keeps the original
-        // merged behavior so no stderr output is lost silently.
-        processBuilder.redirectErrorStream(!debugOffload)
+        // nanoMuse: always merge stderr into stdout. The split-debug behavior
+        // (stderr → logcat only) left the chat model blind to command failures:
+        // a python -c quoting bug surfaced as an empty result plus an exit
+        // code, with the SyntaxError visible in logcat alone, so the model
+        // could not self-correct. Marker detection is unaffected — the marker
+        // is echoed by /bin/sh itself and stderr text before it is just part
+        // of the captured output the model is meant to see.
+        processBuilder.redirectErrorStream(true)
 
         val env = processBuilder.environment()
         env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
