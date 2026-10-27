@@ -269,6 +269,24 @@
       }
     },
     {
+      "id": "telegram",
+      "name": "Telegram",
+      "category": "talk",
+      "url": "https://165.22.56.120.sslip.io/mcp",
+      "auth": {
+        "kind": "key",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+        "where": "the token your gateway operator gave you (TG_PROXY_TOKEN)"
+      },
+      "docs": "https://github.com/chigwell/telegram-mcp",
+      "color": "#2AABEE",
+      "about": {
+        "en": "Read and send messages as your own account, via your self-hosted gateway.",
+        "zh": "通过你自托管网关，以本人身份读写消息、总结对话。"
+      }
+    },
+    {
       "id": "github",
       "name": "GitHub",
       "category": "dev",

@@ -77,6 +77,8 @@ export const CATALOGUE: CatalogueEntry[] = [
     about: { en: 'Search and read channels and messages in your workspace.', zh: '搜索和阅读你工作区里的频道与消息。' } },
   { id: 'discord', name: 'Discord', category: 'talk', url: 'https://mcp.discord.com/mcp', auth: { kind: 'oauth', clientIdRequired: true, developer: 'https://discord.com/developers/applications' }, docs: 'https://discord.com/developers/docs/intro', icon: 'discord', color: '#5865F2',
     about: { en: 'Your servers and channels.', zh: '你的服务器与频道。' } },
+  { id: 'telegram', name: 'Telegram', category: 'talk', url: 'https://165.22.56.120.sslip.io/mcp', auth: { kind: 'key', header: 'Authorization', prefix: 'Bearer ', where: 'the token your gateway operator gave you (TG_PROXY_TOKEN)' }, docs: 'https://github.com/chigwell/telegram-mcp', color: '#2AABEE',
+    about: { en: 'Read and send messages as your own account, via your self-hosted gateway.', zh: '通过你自托管网关，以本人身份读写消息、总结对话。' } },
 
   // ---- dev
   { id: 'github', name: 'GitHub', category: 'dev', url: 'https://api.githubcopilot.com/mcp/', auth: { kind: 'oauth', clientIdRequired: true, developer: 'https://github.com/settings/developers' }, docs: 'https://github.com/github/github-mcp-server', icon: 'github', color: '#181717',
