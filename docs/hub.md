@@ -62,7 +62,11 @@ Two kinds of request travel over the hub:
   after the step in flight, answers `{stopped: true}`, and the `task` call
   itself then fails with `cancelled`. `{stopped: false}` means there was
   nothing of the caller's to stop; a device never stops another device's
-  task. The runtime, the desktop app and the phone all do this.
+  task. The runtime, the desktop app and the phone all do this. A `task`
+  for a conversation that is already running one fails at once with `busy`
+  (the runtime): the caller waits for the first to answer, or stops it, and
+  asks again. A task that has not answered within the hub's limit fails with
+  `timeout`, one the target's Muse could not run with `failed`.
   `stream: true` says the caller draws each `text` in place of the text since the last `tool`;
   nanoMuse Desktop then also sends `text {text, interim, partial: true}` with the text of the
   message the model is writing, at most every 250 ms, and the finished message as before. A
@@ -73,12 +77,16 @@ Two kinds of request travel over the hub:
   the caller what to draw, so the run reads the same in the caller's chat as in
   the target's own: `tool {id, name, summary}` when a tool starts and
   `tool_result {id, name, ok, summary}` when it ends (same `id`), `approval
-  {approval_id, preview, risk, reason, device, timeout}` and, once decided on
+  {approval_id, preview, risk, reason, device, timeout, grant_key}` and, once decided on
   either side, `approval_result {approval_id, status}`, `text {text, interim}`
   for what the Muse says along the way, `image` and `file` for things it made,
   `error`. The `result` frame carries the final answer. A caller draws a `text` in place of the
   text since the last `tool`, so a target may send the growing text of one message more than
   once and the caller shows it as it grows; a target that sends each message once is shown the same.
+  `grant_key` (since 1.0.6) is what an answer remembered on the asking device covers:
+  the runtime sends the key its own grants use (the tool and its target, `shell:git`),
+  the desktop the tool and its whole main argument; a sender without it is remembered
+  by the first 60 characters of `preview`, as before, which two different steps can share.
 
 - **Coding agents.** `coding.agents`, `coding.sessions`, `coding.session`,
   `coding.send`, `coding.stop`, `coding.runs`: the Cursor / Codex / Claude Code
@@ -92,7 +100,10 @@ Two kinds of request travel over the hub:
 
 Each device decides what it lets others do. On the phone, *Let other devices
 operate this phone* (*Settings → nanoMuse Cloud → Devices*) off makes the phone
-answer `info` and nothing else; it still sees and drives the others.
+answer `info` and nothing else; it still sees and drives the others. The
+runtime's `info` then names the computer and its system only (no account
+name, home or working directory, no shell) and lists `info` as the one
+action.
 With it on, a raw action that does something *to* the device (`shell`, `files`,
 `file.get`, `file.put`, `open`, `screen`, `coding.send`, `coding.stop`) is first
 agreed to by the person at that device: the usual approval card, *once* or
@@ -162,7 +173,9 @@ JSON text frames over `WS /v1/hub`, `Authorization: Bearer nm_…` (browsers put
 the key in `hello` instead).
 
 ```
-→ hello    {device:{id,name,kind,os,version,actions[]}}     kind: phone | computer | web
+→ hello    {device:{id,name,kind,os,version,actions[],llm?}}   kind: phone | computer | web
+           llm (relay 0.28, optional): {provider, model}, the ids the device runs its model under ("cloud",
+           "openrouter", a model id); plain ids only, never a key or a URL; kept on the device row for the operator
 ← welcome  {device_id, devices:[…], server:{version,frame_limit,time}}
 ← devices  {devices:[{id,name,kind,os,version,actions[],online,last_seen,controllable,ip}]}
 
@@ -170,13 +183,13 @@ the key in `hello` instead).
 ← call     {id, from:{id,name,kind}, action, args}          (delivered to the target)
 → event    {id, body}          ← event  {id, from, body}    progress, approvals, images
 → result   {id, ok, body | error, message}                  ← result (to the caller)
-← error    {code, message, id?}   device_offline · not_controllable · self_call · unknown_call · timeout
+← error    {code, message, id?}   device_offline · not_controllable · self_call · duplicate_call · unknown_call · timeout
                                   too_large · rate_limited · bad_frame · device_online · bad_key · bad_device
 
 → devices  {}        → rename {name}        → forget {device_id}        → ping  ← pong
 ← profile  {rev, device}       the account's name, look or connectors changed (PUT /v1/me/profile); fetch it
 ← sync     {what:"conversations", cursor, from}   another device pushed or deleted synced conversations; pull /v1/sync/changes
-← working  {cid, from, device_name, working, at}  another device started (true) or finished (false) a turn in that synced conversation
+← working  {cid, from, device_name, working, at, state?, detail?}  another device started (true) or finished (false) a turn in that synced conversation; on a true, since relay 0.31, what it is doing (`state`: working | waiting; `detail`: the step, up to 160 characters)
 ```
 
 Close codes: `4000` hello expected (no hello within 15 s, or a frame that is
@@ -192,7 +205,10 @@ by a newer connection of the same device id, or, with the reason
 `hub_paused` (relay 0.22), the operator switched the hub or the whole service
 off: a client waits and reconnects later instead of retrying at once
 ([cloud.md › Controls](cloud.md#controls)); `4008` too many frames (the
-rate limit below was ignored); and `4009` slow consumer (the relay had 512
+rate limit below was ignored) or, with the reason `too_many_connections`
+(relay 0.30), too many sockets: one address opened more than 60 in a minute,
+or the account already has 32 devices connected (a device taking its own
+place again is not counted); and `4009` slow consumer (the relay had 512
 frames or 32 MB queued for a socket that was not reading them; the client
 reconnects with backoff like after any network close).
 
@@ -229,6 +245,21 @@ remembered. Bodies for `file.get`, `file.put` and `screen` carry the bytes in
 base64 (`data`) with `mime`; the desktop refuses files over 8 MB, the relay
 refuses frames over `HUB_FRAME_LIMIT`.
 
+From relay 0.27, a credential owns one Hub identity: its `device.id` and
+`device.kind` are fixed when the credential is issued with `device_id` and
+`device_kind` (`POST /v1/auth/verify` and `/login`), or else at the first
+accepted `hello` of a credential that was issued without them. The same
+credential may reconnect and replace its own older socket, but `bad_device`
+rejects another id or kind. An id a live key holds is taken over only by a key
+from a later code or password sign-in (the phone signed in again without
+signing out, the runtime's vault was reset, a sign-out that never reached the
+relay): the older key still opens the account but no longer speaks for the
+device. A revoked or lapsed key releases its id. A session key
+(`/v1/auth/session-key`, nanoMuse Web's containers) registers an id nobody
+holds and never takes one over. Existing clients keep their keys and register
+at their next connection; clients that send the identity at sign-in bind it
+there.
+
 The agent's name and look are the account's, not a device's: `GET` / `PUT
 /v1/me/profile` on the relay keep them (the dragon, an emoji on a colour, or a
 face drawn in the avatar studio with its five small stills), last writer wins,
@@ -248,6 +279,15 @@ list those entries under the connectors catalogue as *Connected on \<device\>;
 sign in here to use it on this device*, and the usual local sign-in is the
 action.
 
+Since relay 0.29 the profile can also name the drawn face's **clips**: the
+device that animated the face puts each clip up as a file (`PUT
+/v1/blobs/{sha256}`, [cloud.md](cloud.md#the-record)) and writes `clips:
+{mood: {sha256, mime, bytes}}`; the other devices, told by the same `profile`
+frame, download the clips from `GET /v1/blobs/{sha256}` instead of rendering
+their own. The clips go with the face: `clips: null`, another avatar or
+`DELETE /v1/me/profile` clears them. The apps of 1.0.6 and earlier ignore the
+field.
+
 Since 0.1.36 the **conversations** travel too, by a different road: their text
 goes to the relay's sync store over REST (`/v1/sync/*`, [cloud.md](cloud.md#conversation-sync)),
 and the hub only carries the nudge. After a push that the relay accepted, or a
@@ -259,7 +299,13 @@ also carries **who is answering**: a device that starts or ends a turn in a
 synced conversation posts `/v1/sync/working`, and the other sockets get
 `working {cid, from, device_name, working, at}`; the apps show *kwai is
 working…* under the last message until `working: false` arrives, the reply
-itself lands, or ten minutes pass. The relay keeps these in memory only. By
+itself lands, or ten minutes pass. Since relay 0.31 a `working: true` also says
+what the run is doing: `state` is `working` or `waiting` (the run is parked on a
+card for the person), and `detail` is the step's own words, at most 160
+characters, so the line reads *kwai is working: opening the booking site* or
+*kwai is waiting for you*. A device that posts without the two fields is shown
+as plain working; a client that does not know them ignores them. The relay
+keeps these in memory only. By
 default only the main conversation is synced; side chats travel only from and to
 devices that turned *Also sync side chats* on. Nothing else is synchronised:
 keys, providers and settings stay where they were entered, and files and images
@@ -310,9 +356,9 @@ computer's own hands) is in [every-device.md](every-device.md).
 
 ## Trust
 
-The relay authenticates every socket with the account key and routes only
-within the account; it stores device names and last-seen times, not what was
-asked. A device answers only devices of its own account, and only while its
+The relay authenticates every socket with a credential bound to its device id
+and kind, and routes only within the account; it stores device names and
+last-seen times, not what was asked. A device answers only devices of its own account, and only while its
 *Remote control* switch is on, and, for anything that runs, reads or writes
 there, after the person at that device agreed (once, or always for the asking
 device). Commands are judged where they are typed, before they leave; a remote

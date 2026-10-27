@@ -238,6 +238,17 @@ def test_operator_hands_speak_the_contract(operator: FakeOperator) -> None:
     assert operator.shots[-1] == {"format": "png", "quality": 80, "max_pixels": 0}
 
 
+def test_the_operator_is_reached_without_the_environment_s_proxy(
+    operator: FakeOperator, dead_proxy: str
+) -> None:
+    """The operator answers the runtime on this machine, behind a bearer token. A proxy in
+    the environment used to be consulted for that call: it read the token, and a proxy that
+    does not forward loopback turned a running operator into "not reachable"."""
+    hands = op.OperatorHands.from_env()
+    hands.click(10, 20)
+    assert operator.executed[-1] == {"action": "click", "x": 10, "y": 20}
+
+
 def test_operator_env_and_token(operator: FakeOperator, monkeypatch: pytest.MonkeyPatch) -> None:
     assert op.operator_env() == (operator.url, TOKEN)
     monkeypatch.setenv(op.TOKEN_ENV, "wrong")
@@ -489,6 +500,11 @@ async def test_tools_take_boxes_and_the_norm_grid(
     assert not r.ok and "[x1, y1, x2, y2]" in (r.error or "")
     r = await act.execute(action="click", x=1700, y=10, label="x")
     assert not r.ok and "outside the 1596×896 picture" in (r.error or "")
+    # the drag's end is checked like its start; NaN and infinity are refused as numbers
+    r = await act.execute(action="drag", x=10, y=10, x2=1700, y2=10)
+    assert not r.ok and "outside the 1596×896 picture" in (r.error or "")
+    r = await act.execute(action="drag", x=10, y=10, x2=float("nan"), y2=10)
+    assert not r.ok and "finite" in (r.error or "")
     # the 0–1000 grid: 500,500 is the picture's centre whatever its size
     link.settings.coords = "norm1000"
     r = await act.execute(action="click", x=500, y=500, label="Save")

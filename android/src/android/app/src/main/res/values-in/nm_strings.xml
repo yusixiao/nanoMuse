@@ -129,6 +129,9 @@
     <string name="nm_routine_paused">Mati</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">Rutinitas · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">Tambah waktu lain</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">Dijadwalkan untuk %1$s</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">Ide</string>
@@ -830,16 +833,21 @@
     <string name="nm_cloud_ev_contribute_default">Kontrol data: nyala untuk akun baru</string>
     <string name="nm_data_title">Kontrol data</string>
     <string name="nm_data_improve">Bantu tingkatkan model AI nanoMuse</string>
-    <string name="nm_data_why">Selama ini nyala, teks chat-mu dengan model nanoMuse Cloud (apa yang kamu tulis, apa jawabannya dan alat yang dipilihnya) disimpan di relay untuk melatih model terbuka milik komunitas. Bukan memorimu atau SOUL (prompt sistem), bukan hasil yang dikembalikan alat, bukan gambar, dan tidak pernah disandingkan dengan identitasmu. Kunci API-mu sendiri tidak pernah melewati relay.</string>
+    <string name="nm_data_why">Selama ini nyala, teks chat tersebut (apa yang kamu tulis, apa jawaban model dan alat yang dipilihnya) juga masuk ke set latih untuk model terbuka milik komunitas: tanpa memorimu atau SOUL (prompt sistem), tanpa hasil yang dikembalikan alat, tanpa gambar, dan tanpa identitasmu. Saat mati, tidak ada lagi yang masuk; rekamannya sendiri tetap ada sampai kamu menghapusnya. Giliran dengan kuncimu sendiri ada di rekaman, tidak pernah di set latih.</string>
+    <string name="nm_data_record_why">nanoMuse Cloud menyimpan utuh setiap giliran chat-mu dengan model-modelnya sebagai rekaman akunmu: apa yang dikirim ke model, apa jawabannya, alat dan hasil yang dikembalikannya, gambar sebagai berkas. Mulai aplikasi 1.0.7, giliran yang dijawab dengan kuncimu sendiri juga masuk. Ini datamu: hanya perangkatmu dan orang yang menjalankan relay yang bisa membacanya.</string>
+    <string name="nm_data_record_held">Rekaman menyimpan %1$d giliran dari akun ini (%2$d dengan kuncimu sendiri), dengan %3$d gambar.</string>
+    <string name="nm_data_record_empty">Rekaman belum menyimpan apa pun dari akun ini.</string>
+    <string name="nm_data_record_keep_days">Relay ini menyimpan sebuah giliran selama %1$d hari.</string>
+    <string name="nm_data_record_keep_forever">Tetap ada sampai kamu menghapusnya.</string>
     <string name="nm_data_default_on">Akun baru memulainya dalam keadaan nyala.</string>
     <string name="nm_data_default_off">Akun baru memulainya dalam keadaan mati.</string>
     <string name="nm_data_kept">%1$d giliran disimpan sejauh ini.</string>
     <string name="nm_data_on_toast">Nyala. Matikan di sini kapan saja.</string>
-    <string name="nm_data_off_toast">Mati. Tidak ada lagi yang disimpan.</string>
-    <string name="nm_data_delete">Hapus percakapan yang disimpan</string>
-    <string name="nm_data_delete_sub">Menghapus setiap giliran yang disimpan dari akun ini, baik sakelarnya sedang nyala maupun mati. Mematikan sakelar tetap menyimpan yang sudah ada sampai kamu menghapusnya di sini.</string>
-    <string name="nm_data_delete_confirm">Percakapan yang disimpan dihapus dari server. Ini tidak bisa dibatalkan.</string>
-    <string name="nm_data_deleted">%1$d giliran dihapus.</string>
+    <string name="nm_data_off_toast">Mati. Tidak ada lagi yang masuk ke set latih.</string>
+    <string name="nm_data_delete">Hapus rekaman dan percakapan yang disimpan</string>
+    <string name="nm_data_delete_sub">Menghapus rekaman chat akun ini dan setiap giliran latih yang disimpan darinya, entah sakelarnya sedang nyala atau mati. Mematikan sakelar tetap menyimpan yang sudah tersimpan sampai kamu menghapusnya di sini.</string>
+    <string name="nm_data_delete_confirm">Rekaman chat-mu dan giliran latih yang disimpan akan dihapus dari server. Ini tidak bisa dibatalkan.</string>
+    <string name="nm_data_deleted">Dihapus: %1$d giliran rekaman, %2$d berkas, %3$d giliran latih.</string>
     <string name="nm_data_sign_in">Masuk ke nanoMuse Cloud untuk memakainya.</string>
     <string name="nm_data_privacy">Kebijakan privasi</string>
     <string name="nm_data_status_on">Nyala</string>
@@ -1045,6 +1053,8 @@
     <string name="nm_sync_side_title">Sinkronkan juga obrolan sampingan</string>
     <string name="nm_sync_side_sub">Mati: obrolan sampingan tetap di perangkat ini. Nyala: obrolan sampingan perangkat ini masuk ke akun, dan obrolan sampingan perangkat lain datang ke sini.</string>
     <string name="nm_sync_working">%1$s sedang mengerjakannya…</string>
+    <string name="nm_sync_working_step">%1$s sedang mengerjakannya: %2$s</string>
+    <string name="nm_sync_waiting">%1$s menunggu Anda</string>
     <string name="nm_devices_ask">Minta perangkat ini</string>
     <string name="nm_devices_ask_hint">Ketuk perangkat yang online untuk menulis padanya dari chat: pesan dimulai dengan @ dan namanya, dan perangkat itu yang mengerjakan.</string>
     <string name="nm_reach_the_provider">penyedia</string>
@@ -1123,7 +1133,6 @@
     <string name="nm_cloud_provider_no_delete">Penyedia ini adalah akun nanoMuse Cloud Anda. Matikan di atas untuk berhenti memakai modelnya; untuk keluar, buka Pengaturan › nanoMuse Cloud.</string>
     <string name="nm_welcome_own_key">Pakai kunci API sendiri saja</string>
     <string name="nm_useit_title">Pakai untuk</string>
-    <string name="nm_useit_body">Pilih apa yang ditangani kunci ini. Sisanya tetap ditangani nanoMuse Cloud.</string>
     <string name="nm_useit_body_signed_out">Pilih apa yang ditangani kunci ini.</string>
     <string name="nm_useit_use">Pakai</string>
     <string name="nm_useit_not_now">Nanti saja</string>
@@ -1163,4 +1172,34 @@
     <string name="nm_font_scale_medium">Sedang</string>
     <string name="nm_font_scale_large">Besar</string>
     <string name="nm_font_scale_extra_large">Sangat besar</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">File di dalam obrolan</string>
+    <string name="nm_backup_chat_files_on">Setiap lampiran, file offload, dan file ruang kerja ikut bersama pesan.</string>
+    <string name="nm_backup_chat_files_off">Hanya pesan. File dicantumkan, tidak dibawa; pemulihan mengembalikan obrolan tanpa file. Paket tetap kecil untuk server yang menolak unggahan besar.</string>
+    <string name="nm_backup_hint_too_large">Server menolak paket karena ukurannya. Biasanya ini batas unggah server (nginx: client_max_body_size); naikkan batasnya, atau cadangkan obrolan tanpa file.</string>
+    <string name="nm_backup_delivery_failed">Pengiriman gagal.</string>
+    <string name="nm_backup_run_needs_passphrase">Enkripsi aktif, dan frasa sandi diketik di halaman Cadangan; menjalankannya dari shell tidak bisa memintanya. Mulai pencadangan dari halaman, atau matikan enkripsi di sana.</string>
+    <string name="nm_backup_run_started">Pencadangan dimulai dari shell.</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">Model sedang sibuk, sudah %1$d dtk</string>
+    <string name="nm_wait_queued">%1$d di depan Anda, sudah %2$d dtk</string>
+    <string name="nm_wait_next">Anda berikutnya, sudah %1$d dtk</string>
+    <string name="nm_fb_up">Jawaban bagus</string>
+    <string name="nm_fb_down">Jawaban kurang bagus</string>
+    <string name="nm_fb_why">Apa yang salah?</string>
+    <string name="nm_fb_reason_wrong">Salah</string>
+    <string name="nm_fb_reason_unhelpful">Tidak membantu</string>
+    <string name="nm_fb_reason_unsafe">Seharusnya tidak melakukan itu</string>
+    <string name="nm_fb_reason_slow">Terlalu lambat</string>
+    <string name="nm_fb_reason_other">Hal lain</string>
+    <string name="nm_fb_skip">Lewati</string>
+    <string name="nm_fb_thanks">Dicatat, terima kasih</string>
+    <string name="nm_stop_why">Kenapa dihentikan?</string>
+    <string name="nm_stop_reason_wrong">Arahnya salah</string>
+    <string name="nm_stop_reason_slow">Terlalu lambat</string>
+    <string name="nm_stop_reason_changed_mind">Berubah pikiran</string>
+    <string name="nm_stop_reason_done">Sudah selesai</string>
+    <string name="nm_stop_reason_other">Hal lain</string>
 </resources>

@@ -25,6 +25,8 @@ from nanomuse.llm.base import (
     DeltaCallback,
     ThinkStreamFilter,
     ToolsUnsupported,
+    begin_call,
+    end_call,
     proxied_http,
     says_no_tools,
     split_think,
@@ -40,6 +42,10 @@ class EmptyCompletion(RuntimeError):
     The ``code`` lets the server word it as a provider failure, not a crash."""
 
     code = "upstream_empty"
+
+
+class PartialStreamError(RuntimeError):
+    """A stream failed after visible text reached the UI, so replaying would duplicate it."""
 
 
 _RETRYABLE = (
@@ -82,6 +88,7 @@ class OpenAIChatLLM(BaseLLM):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
         on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
         pictures = has_images(messages)
@@ -99,8 +106,14 @@ class OpenAIChatLLM(BaseLLM):
             params["tool_choice"] = tool_choice
         if self.settings.extra_body:
             params["extra_body"] = self.settings.extra_body
+        # where the call sits (relay 0.31: the X-NanoMuse-* headers, to the relay only) and
+        # the vendor's own session header, when it has one
+        call = begin_call(self.settings.base_url)
+        extra_headers = dict(call.headers)
         if self.session_header:
-            params["extra_headers"] = {self.session_header: session_id(self._session_fallback)}
+            extra_headers[self.session_header] = session_id(self._session_fallback)
+        if extra_headers:
+            params["extra_headers"] = extra_headers
         # the body's size, so the next 413 from a relay is diagnosable from the log (the
         # pictures are in it as base64); measured only when debug logging is on
         logger.opt(lazy=True).debug(
@@ -110,7 +123,7 @@ class OpenAIChatLLM(BaseLLM):
             lambda: sum(1 for m in params["messages"] if isinstance(m.get("content"), list)),
         )
         try:
-            resp = await self._send(params, on_delta)
+            resp = await self._send(params, on_delta, on_reasoning_delta)
         except openai.BadRequestError as e:
             if tools and says_no_tools(str(e)):
                 raise ToolsUnsupported(str(e)) from e
@@ -124,10 +137,13 @@ class OpenAIChatLLM(BaseLLM):
                 )
                 self.vision_available = False
                 params["messages"] = self._wire_messages(messages, False)
-                return await self._send(params, on_delta)
+                resp = await self._send(params, on_delta, on_reasoning_delta)
+                end_call(call, settings=self.settings, params=params, response=resp)
+                return resp
             raise
         if with_images and self.vision_available is None:
             self.vision_available = True
+        end_call(call, settings=self.settings, params=params, response=resp)
         return resp
 
     def _wire_messages(self, messages: list[Message], with_images: bool) -> list[dict[str, Any]]:
@@ -140,7 +156,12 @@ class OpenAIChatLLM(BaseLLM):
             out.append(d)
         return out
 
-    async def _send(self, params: dict[str, Any], on_delta: DeltaCallback | None) -> LLMResponse:
+    async def _send(
+        self,
+        params: dict[str, Any],
+        on_delta: DeltaCallback | None,
+        on_reasoning_delta: DeltaCallback | None = None,
+    ) -> LLMResponse:
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(_RETRYABLE),
             stop=stop_after_attempt(max(1, self.settings.max_retries + 1)),
@@ -155,7 +176,7 @@ class OpenAIChatLLM(BaseLLM):
                         self.settings.max_retries,
                     )
                 if self.settings.stream:
-                    return await self._ask_stream(params, on_delta)
+                    return await self._ask_stream(params, on_delta, on_reasoning_delta)
                 return await self._ask_once(params)
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -191,7 +212,10 @@ class OpenAIChatLLM(BaseLLM):
         )
 
     async def _ask_stream(
-        self, params: dict[str, Any], on_delta: DeltaCallback | None
+        self,
+        params: dict[str, Any],
+        on_delta: DeltaCallback | None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> LLMResponse:
         stream = await self.client.chat.completions.create(
             **params, stream=True, stream_options={"include_usage": True}
@@ -204,37 +228,48 @@ class OpenAIChatLLM(BaseLLM):
         usage: dict[str, Any] = {}
         model: str | None = None
 
-        async for chunk in stream:
-            if chunk.usage:
-                usage = chunk.usage.model_dump(exclude_none=True)
-            model = model or getattr(chunk, "model", None)
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            if delta is None:
-                continue
-            rc = getattr(delta, "reasoning_content", None)
-            if rc:
-                reasoning_parts.append(rc)
-            if delta.content:
-                visible = think.feed(delta.content)
-                if visible:
-                    content_parts.append(visible)
-                    if on_delta:
-                        on_delta(visible)
-            for tc in delta.tool_calls or []:
-                idx = tc.index if tc.index is not None else 0
-                acc = tool_acc.setdefault(idx, {"id": None, "name": "", "arguments": ""})
-                if tc.id:
-                    acc["id"] = tc.id
-                if tc.function is not None:
-                    if tc.function.name:
-                        acc["name"] += tc.function.name
-                    if tc.function.arguments:
-                        acc["arguments"] += tc.function.arguments
+        try:
+            async for chunk in stream:
+                if chunk.usage:
+                    usage = chunk.usage.model_dump(exclude_none=True)
+                model = model or getattr(chunk, "model", None)
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+                if delta is None:
+                    continue
+                rc = getattr(delta, "reasoning_content", None)
+                if rc:
+                    reasoning_parts.append(rc)
+                    if on_reasoning_delta:
+                        on_reasoning_delta(rc)
+                if delta.content:
+                    visible = think.feed(delta.content)
+                    if visible:
+                        content_parts.append(visible)
+                        if on_delta:
+                            on_delta(visible)
+                for tc in delta.tool_calls or []:
+                    idx = tc.index if tc.index is not None else 0
+                    acc = tool_acc.setdefault(idx, {"id": None, "name": "", "arguments": ""})
+                    if tc.id:
+                        acc["id"] = tc.id
+                    if tc.function is not None:
+                        if tc.function.name:
+                            acc["name"] += tc.function.name
+                        if tc.function.arguments:
+                            acc["arguments"] += tc.function.arguments
+        except Exception as exc:
+            # what the person already saw is not shown twice: text, or the thinking
+            # streamed live (the reasoning callback is set only while it is displayed)
+            if content_parts or (reasoning_parts and on_reasoning_delta is not None):
+                raise PartialStreamError(
+                    "the model stream failed after visible text was shown; it was not retried"
+                ) from exc
+            raise
 
         tail = think.flush()
         if tail:
@@ -262,4 +297,4 @@ class OpenAIChatLLM(BaseLLM):
         )
 
 
-__all__ = ["OpenAIChatLLM", "NOT_GIVEN"]
+__all__ = ["OpenAIChatLLM", "NOT_GIVEN", "PartialStreamError"]

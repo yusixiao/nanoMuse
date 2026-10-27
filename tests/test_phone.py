@@ -359,6 +359,31 @@ async def test_phone_act_risk_follows_the_label_under_the_finger():
     link = PhoneLink()
     FakePhone(link, [PAY_SCREEN])
     await link.screen()
+    link.last_screen = Screen.from_device(
+        {
+            **PAY_SCREEN,
+            "nodes": [
+                {
+                    "class": "Button",
+                    "text": "确认付款",
+                    "box": [120, 730, 270, 820],
+                    "clickable": True,
+                },
+                {
+                    "class": "EditText",
+                    "text": "备注",
+                    "box": [40, 210, 300, 300],
+                    "editable": True,
+                },
+                {
+                    "class": "ImageButton",
+                    "text": "支付宝",
+                    "box": [0, 0, 60, 60],
+                    "clickable": True,
+                },
+            ],
+        }
+    )
     act = PhoneAct(link=link, gui=GUISettings())
 
     pay = act.assess({"action": "tap", "x": 195, "y": 784, "label": "确认付款"})
@@ -369,11 +394,20 @@ async def test_phone_act_risk_follows_the_label_under_the_finger():
     note = act.assess({"action": "tap", "x": 100, "y": 260, "label": "备注"})
     assert note.risk == RiskLevel.MODERATE and not note.warnings
 
+    # no label, but the element under the finger says 确认付款: the tree decides
     blind = act.assess({"action": "tap", "x": 195, "y": 784})
-    assert blind.risk == RiskLevel.MODERATE and "no `label`" in blind.warnings[0]
+    assert blind.risk == RiskLevel.SENSITIVE and any("no `label`" in w for w in blind.warnings)
+
+    # the label says one thing, the element under the finger another: the stricter decides
+    dishonest = act.assess({"action": "tap", "x": 195, "y": 784, "label": "View details"})
+    assert dishonest.risk == RiskLevel.SENSITIVE and any("付款" in w for w in dishonest.warnings)
 
     icon = act.assess({"action": "tap", "x": 30, "y": 30, "label": "支付宝"})
     assert icon.risk == RiskLevel.MODERATE  # an app's name is never a payment step
+
+    # nothing reported under the finger: the label decides, as on a screen without a tree
+    bare = act.assess({"action": "tap", "x": 380, "y": 20, "label": "Settings"})
+    assert bare.risk == RiskLevel.MODERATE and not bare.egress and not bare.warnings
 
     typing = act.assess({"action": "type", "text": "房租", "label": "备注"})
     assert typing.risk == RiskLevel.MODERATE and 'type "房租" into "备注"' in typing.summary
@@ -425,6 +459,18 @@ async def test_phone_act_takes_coordinates_and_returns_the_next_screen(tmp_path:
         "distance": 0.3,
     }
     assert not (await act.execute(action="swipe", x=1, y=1)).ok
+    # where the finger ends, where a directional swipe starts and where typing focuses are
+    # on the screen too; NaN and infinity are not numbers the phone should hear of
+    off_end = await act.execute(action="swipe", x=200, y=600, x2=200, y2=-900)
+    assert not off_end.ok and "outside the 390×844 screen" in off_end.error
+    off_start = await act.execute(action="swipe", direction="up", x=5000, y=5)
+    assert not off_start.ok and "outside the 390×844 screen" in off_start.error
+    off_focus = await act.execute(action="type", text="x", x=1, y=99999)
+    assert not off_focus.ok and "outside the 390×844 screen" in off_focus.error
+    nan = await act.execute(action="tap", x=float("nan"), y=5, label="x")
+    assert not nan.ok and "needs `x` and `y`" in nan.error
+    inf = await act.execute(action="swipe", x=1, y=1, x2=float("inf"), y2=1)
+    assert not inf.ok and "needs `x2`/`y2`" in inf.error
 
     opened = await act.execute(action="open_app", app="微信")
     assert opened.ok and phone.acts[-1]["app"] == "wechat"
@@ -552,7 +598,27 @@ def test_detect_language_names_english_outright():
 
 async def test_operator_runs_until_done_and_asks_before_paying(settings: Settings):
     link = PhoneLink(shots_dir=settings.agent.workspace / "screenshots")
-    phone = FakePhone(link, [HOME_SCREEN, PAY_SCREEN, PAY_SCREEN])
+    home = {
+        **HOME_SCREEN,
+        "nodes": [
+            {
+                "text": "支付宝",
+                "box": [100, 0, 190, 100],
+                "clickable": True,
+            }
+        ],
+    }
+    pay = {
+        **PAY_SCREEN,
+        "nodes": [
+            {
+                "text": "确认付款",
+                "box": [120, 730, 270, 830],
+                "clickable": True,
+            }
+        ],
+    }
+    phone = FakePhone(link, [home, pay, pay])
     ui = AutoApproveUI(approve=True)
     llm = MockLLM(
         [

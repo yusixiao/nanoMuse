@@ -26,14 +26,22 @@ from nanomuse.llm.base import (
     DeltaCallback,
     ThinkStreamFilter,
     ToolsUnsupported,
+    begin_call,
+    end_call,
     proxied_http,
     says_no_tools,
     split_think,
 )
+from nanomuse.llm.openai_chat import PartialStreamError
 from nanomuse.llm.session import client_headers, new_fallback, session_id
 from nanomuse.llm.vision import content_parts, has_images, model_takes_images, without_images
 from nanomuse.logger import logger
 from nanomuse.schema import Function, LLMResponse, Message, Role, ToolCall, new_id
+
+try:  # the SDK's error classes carry a response of the HTTP library the SDK is built on
+    import httpx2 as _httpx  # openai 3.x
+except ImportError:  # pragma: no cover — openai 1.x
+    import httpx as _httpx  # type: ignore[no-redef]
 
 _RETRYABLE = (
     openai.APIConnectionError,
@@ -41,6 +49,25 @@ _RETRYABLE = (
     openai.RateLimitError,
     openai.InternalServerError,
 )
+
+
+def _response_failure(error: Any) -> openai.APIError:
+    """Turn a streamed Responses failure into the SDK class used by normal HTTP failures."""
+    code = str(getattr(error, "code", "") or "")
+    message = str(getattr(error, "message", "") or error or "response failed")
+    request = _httpx.Request("POST", "https://api.openai.invalid/v1/responses")
+    body = {"error": {"code": code, "message": message}}
+    if code in ("rate_limit", "rate_limit_exceeded"):
+        return openai.RateLimitError(
+            message, response=_httpx.Response(429, request=request), body=body
+        )
+    if code in ("bad_request", "invalid_request_error"):
+        return openai.BadRequestError(
+            message, response=_httpx.Response(400, request=request), body=body
+        )
+    return openai.InternalServerError(
+        message, response=_httpx.Response(500, request=request), body=body
+    )
 
 
 def _to_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -142,6 +169,7 @@ class OpenAIResponsesLLM(BaseLLM):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
         on_delta: DeltaCallback | None = None,
+        on_reasoning_delta: DeltaCallback | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
         pictures = has_images(messages)
@@ -164,11 +192,15 @@ class OpenAIResponsesLLM(BaseLLM):
             params["tool_choice"] = tool_choice
         if self.settings.extra_body:
             params["extra_body"] = self.settings.extra_body
+        call = begin_call(self.settings.base_url)
+        extra_headers = dict(call.headers)
         if self.session_header:
-            params["extra_headers"] = {self.session_header: session_id(self._session_fallback)}
+            extra_headers[self.session_header] = session_id(self._session_fallback)
+        if extra_headers:
+            params["extra_headers"] = extra_headers
 
         try:
-            resp = await self._send(params, on_delta)
+            resp = await self._send(params, on_delta, on_reasoning_delta)
         except openai.BadRequestError as e:
             if tools and says_no_tools(str(e)):
                 raise ToolsUnsupported(str(e)) from e
@@ -180,13 +212,46 @@ class OpenAIResponsesLLM(BaseLLM):
                 )
                 self.vision_available = False
                 params["input"] = _to_input_items(without_images(messages), False)[1]
-                return await self._send(params, on_delta)
+                resp = await self._send(params, on_delta, on_reasoning_delta)
+                end_call(
+                    call,
+                    settings=self.settings,
+                    params=params,
+                    response=resp,
+                    messages=self._chat_shape(without_images(messages), False),
+                )
+                return resp
             raise
         if with_images and self.vision_available is None:
             self.vision_available = True
+        end_call(
+            call,
+            settings=self.settings,
+            params=params,
+            response=resp,
+            messages=self._chat_shape(
+                messages if with_images or not pictures else without_images(messages), with_images
+            ),
+        )
         return resp
 
-    async def _send(self, params: dict[str, Any], on_delta: DeltaCallback | None) -> LLMResponse:
+    def _chat_shape(self, messages: list[Message], with_images: bool) -> list[dict[str, Any]]:
+        """The conversation in the Chat Completions shape the record keeps, whichever
+        protocol carried it."""
+        out = []
+        for m in messages:
+            d = m.to_openai(include_reasoning=self.settings.pass_reasoning)
+            if with_images and m.images:
+                d["content"] = content_parts(m)
+            out.append(d)
+        return out
+
+    async def _send(
+        self,
+        params: dict[str, Any],
+        on_delta: DeltaCallback | None,
+        on_reasoning_delta: DeltaCallback | None = None,
+    ) -> LLMResponse:
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type(_RETRYABLE),
             stop=stop_after_attempt(max(1, self.settings.max_retries + 1)),
@@ -201,7 +266,7 @@ class OpenAIResponsesLLM(BaseLLM):
                         self.settings.max_retries,
                     )
                 if self.settings.stream:
-                    return await self._ask_stream(params, on_delta)
+                    return await self._ask_stream(params, on_delta, on_reasoning_delta)
                 return await self._ask_once(params)
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -253,25 +318,45 @@ class OpenAIResponsesLLM(BaseLLM):
         return self._parse(resp)
 
     async def _ask_stream(
-        self, params: dict[str, Any], on_delta: DeltaCallback | None
+        self,
+        params: dict[str, Any],
+        on_delta: DeltaCallback | None,
+        on_reasoning_delta: DeltaCallback | None = None,
     ) -> LLMResponse:
         stream = await self.client.responses.create(**params, stream=True)
         think = ThinkStreamFilter()
         final: Any = None
         streamed: list[str] = []
-        async for event in stream:
-            etype = getattr(event, "type", "")
-            if etype == "response.output_text.delta":
-                visible = think.feed(getattr(event, "delta", "") or "")
-                if visible:
-                    streamed.append(visible)
-                    if on_delta:
-                        on_delta(visible)
-            elif etype in ("response.completed", "response.incomplete"):
-                final = getattr(event, "response", None)
-            elif etype == "response.failed":
-                err = getattr(getattr(event, "response", None), "error", None)
-                raise openai.APIError(str(err or "response failed"), request=None, body=None)  # type: ignore[arg-type]
+        shown_reasoning = False
+        try:
+            async for event in stream:
+                etype = getattr(event, "type", "")
+                if etype == "response.output_text.delta":
+                    visible = think.feed(getattr(event, "delta", "") or "")
+                    if visible:
+                        streamed.append(visible)
+                        if on_delta:
+                            on_delta(visible)
+                elif etype in (
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_text.delta",
+                ):
+                    piece = getattr(event, "delta", "") or ""
+                    if piece and on_reasoning_delta:
+                        shown_reasoning = True
+                        on_reasoning_delta(piece)
+                elif etype in ("response.completed", "response.incomplete"):
+                    final = getattr(event, "response", None)
+                elif etype == "response.failed":
+                    err = getattr(getattr(event, "response", None), "error", None)
+                    raise _response_failure(err)
+        except Exception as exc:
+            # what the person already saw is not shown twice: text, or the thinking streamed live
+            if streamed or shown_reasoning:
+                raise PartialStreamError(
+                    "the model stream failed after visible text was shown; it was not retried"
+                ) from exc
+            raise
         tail = think.flush()
         if tail:
             streamed.append(tail)

@@ -129,6 +129,9 @@
     <string name="nm_routine_paused">끔</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">루틴 · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">시간 추가</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">%1$s 예정</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">아이디어</string>
@@ -830,16 +833,21 @@
     <string name="nm_cloud_ev_contribute_default">데이터 관리: 새 계정은 켬</string>
     <string name="nm_data_title">데이터 관리</string>
     <string name="nm_data_improve">nanoMuse의 AI 모델 개선 돕기</string>
-    <string name="nm_data_why">켜져 있는 동안 nanoMuse Cloud 모델과 나눈 채팅의 텍스트(내가 쓴 것, 모델이 답한 것, 모델이 호출하기로 한 도구)가 커뮤니티의 오픈 모델을 학습시키기 위해 릴레이에 보관됩니다. 메모리나 SOUL(시스템 프롬프트), 도구가 돌려준 결과, 그림은 포함되지 않고, 내가 누구인지와 함께 두는 일도 없습니다. 내 API 키는 릴레이를 거치지 않습니다.</string>
+    <string name="nm_data_why">켜져 있는 동안 이 채팅의 텍스트(내가 쓴 것, 모델이 답한 것, 모델이 호출하기로 한 도구)는 커뮤니티의 오픈 모델을 위한 학습 세트에도 들어갑니다. 메모리나 SOUL(시스템 프롬프트), 도구가 돌려준 결과, 그림, 내가 누구인지는 포함되지 않습니다. 끄면 더는 들어가지 않고, 기록 자체는 삭제할 때까지 남습니다. 내 키로 한 턴은 기록에만 들어가고 학습 세트에는 절대 들어가지 않습니다.</string>
+    <string name="nm_data_record_why">nanoMuse Cloud는 그 모델과 나눈 채팅의 모든 턴을 내 계정의 기록으로 통째로 보관합니다. 모델에 보낸 내용, 모델의 답, 도구와 도구가 돌려준 결과, 그림은 파일로 보관합니다. 1.0.7부터의 앱에서는 내 키로 답한 턴도 들어갑니다. 이것은 내 데이터이며, 내 기기와 릴레이를 운영하는 사람만 읽을 수 있습니다.</string>
+    <string name="nm_data_record_held">기록에 이 계정의 %1$d턴(그중 %2$d턴은 내 키 사용)과 그림 %3$d장이 있습니다.</string>
+    <string name="nm_data_record_empty">기록에 아직 이 계정의 내용이 없습니다.</string>
+    <string name="nm_data_record_keep_days">이 릴레이는 턴을 %1$d일 동안 보관합니다.</string>
+    <string name="nm_data_record_keep_forever">삭제할 때까지 남습니다.</string>
     <string name="nm_data_default_on">새 계정은 켠 상태로 시작합니다.</string>
     <string name="nm_data_default_off">새 계정은 끈 상태로 시작합니다.</string>
     <string name="nm_data_kept">지금까지 %1$d턴 보관됨.</string>
     <string name="nm_data_on_toast">켬. 언제든 여기서 끌 수 있습니다.</string>
-    <string name="nm_data_off_toast">끔. 더 이상 보관하지 않습니다.</string>
-    <string name="nm_data_delete">보관된 대화 삭제</string>
-    <string name="nm_data_delete_sub">스위치가 지금 켜져 있든 꺼져 있든 이 계정에서 보관된 모든 턴을 삭제합니다. 스위치를 끄는 것만으로는 여기서 삭제하기 전까지 보관된 것이 남습니다.</string>
-    <string name="nm_data_delete_confirm">보관된 대화가 서버에서 삭제됩니다. 되돌릴 수 없습니다.</string>
-    <string name="nm_data_deleted">%1$d턴을 삭제했습니다.</string>
+    <string name="nm_data_off_toast">꺼짐. 더는 학습 세트에 들어가지 않습니다.</string>
+    <string name="nm_data_delete">기록과 보관된 대화 삭제</string>
+    <string name="nm_data_delete_sub">이 계정 채팅의 기록과 보관된 모든 학습 턴을 삭제합니다. 스위치가 지금 켜져 있든 꺼져 있든 상관없습니다. 스위치를 끄기만 하면 여기서 삭제할 때까지 보관된 것은 남습니다.</string>
+    <string name="nm_data_delete_confirm">채팅 기록과 보관된 학습 턴이 서버에서 삭제됩니다. 되돌릴 수 없습니다.</string>
+    <string name="nm_data_deleted">삭제됨: 기록 %1$d턴, 파일 %2$d개, 학습 턴 %3$d턴.</string>
     <string name="nm_data_sign_in">쓰려면 nanoMuse Cloud에 로그인하세요.</string>
     <string name="nm_data_privacy">개인정보 처리방침</string>
     <string name="nm_data_status_on">켬</string>
@@ -1045,6 +1053,8 @@
     <string name="nm_sync_side_title">사이드 채팅도 동기화</string>
     <string name="nm_sync_side_sub">끔: 사이드 채팅은 이 기기에만 남습니다. 켬: 이 기기의 사이드 채팅이 계정으로 올라가고, 다른 기기의 사이드 채팅도 여기로 옵니다.</string>
     <string name="nm_sync_working">%1$s이(가) 작업 중…</string>
+    <string name="nm_sync_working_step">%1$s이(가) 작업 중: %2$s</string>
+    <string name="nm_sync_waiting">%1$s이(가) 확인을 기다리고 있어요</string>
     <string name="nm_devices_ask">이 기기에 부탁</string>
     <string name="nm_devices_ask_hint">온라인인 기기를 탭하면 채팅에서 그 기기에 쓸 수 있습니다. 메시지가 @와 기기 이름으로 시작하고, 그 기기가 일을 합니다.</string>
     <string name="nm_reach_the_provider">제공자</string>
@@ -1123,7 +1133,6 @@
     <string name="nm_cloud_provider_no_delete">이 제공자는 nanoMuse Cloud 계정 자체입니다. 모델 사용을 멈추려면 위 스위치를 끄고, 로그아웃하려면 설정 › nanoMuse Cloud를 여세요.</string>
     <string name="nm_welcome_own_key">내 API 키 사용</string>
     <string name="nm_useit_title">어디에 쓸지</string>
-    <string name="nm_useit_body">이 키가 맡을 일을 고르세요. 나머지는 nanoMuse Cloud가 계속 맡습니다.</string>
     <string name="nm_useit_body_signed_out">이 키가 맡을 일을 고르세요.</string>
     <string name="nm_useit_use">쓰기</string>
     <string name="nm_useit_not_now">나중에</string>
@@ -1163,4 +1172,34 @@
     <string name="nm_font_scale_medium">중간</string>
     <string name="nm_font_scale_large">크게</string>
     <string name="nm_font_scale_extra_large">매우 크게</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">대화 속 파일</string>
+    <string name="nm_backup_chat_files_on">첨부 파일, 오프로드, 작업 공간 파일이 메시지와 함께 백업됩니다.</string>
+    <string name="nm_backup_chat_files_off">메시지만 백업합니다. 파일은 목록에만 남고 담기지 않으며, 복원하면 대화만 돌아옵니다. 큰 업로드를 거부하는 서버에 맞게 패키지가 작아집니다.</string>
+    <string name="nm_backup_hint_too_large">서버가 크기 때문에 패키지를 거부했습니다. 대개 서버의 업로드 한도(nginx의 client_max_body_size)입니다. 한도를 올리거나 대화를 파일 없이 백업하세요.</string>
+    <string name="nm_backup_delivery_failed">전송에 실패했습니다.</string>
+    <string name="nm_backup_run_needs_passphrase">암호화가 켜져 있고 암호 구문은 백업 화면에서 입력합니다. 셸에서 시작한 백업은 그것을 물어볼 수 없습니다. 화면에서 백업을 시작하거나 거기서 암호화를 끄세요.</string>
+    <string name="nm_backup_run_started">셸에서 백업을 시작했습니다.</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">모델이 혼잡합니다. %1$d초 경과</string>
+    <string name="nm_wait_queued">앞에 %1$d건, %2$d초 경과</string>
+    <string name="nm_wait_next">다음은 내 차례입니다. %1$d초 경과</string>
+    <string name="nm_fb_up">좋은 답변</string>
+    <string name="nm_fb_down">좋지 않은 답변</string>
+    <string name="nm_fb_why">무엇이 문제였나요?</string>
+    <string name="nm_fb_reason_wrong">틀렸어요</string>
+    <string name="nm_fb_reason_unhelpful">도움이 되지 않았어요</string>
+    <string name="nm_fb_reason_unsafe">그렇게 하면 안 됐어요</string>
+    <string name="nm_fb_reason_slow">너무 느려요</string>
+    <string name="nm_fb_reason_other">기타</string>
+    <string name="nm_fb_skip">건너뛰기</string>
+    <string name="nm_fb_thanks">확인했어요, 고마워요</string>
+    <string name="nm_stop_why">왜 멈추셨나요?</string>
+    <string name="nm_stop_reason_wrong">방향이 잘못됐어요</string>
+    <string name="nm_stop_reason_slow">너무 느렸어요</string>
+    <string name="nm_stop_reason_changed_mind">마음이 바뀌었어요</string>
+    <string name="nm_stop_reason_done">이미 다 됐어요</string>
+    <string name="nm_stop_reason_other">기타</string>
 </resources>

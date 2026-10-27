@@ -53,7 +53,7 @@ temperature   = 0.3
 timeout       = 180                # seconds per request
 max_retries   = 5                  # exponential back-off on 429 / 5xx / timeouts
 stream        = true
-tool_mode     = "auto"             # "auto" | "native" | "prompt" — see below
+tool_mode     = "auto"             # "auto" | "native" | "prompt"; see below
 vision        = "auto"             # pictures attached in chat go to the model: "auto" | "on" | "off"
 pass_reasoning = false             # send reasoning_content back with assistant turns (some DeepSeek endpoints)
 extra_headers = {}                 # e.g. { "X-End-User-Id" = "nanomuse" }
@@ -133,11 +133,11 @@ Ollama 在 `http://localhost:11434/v1` 提供 OpenAI 兼容的 API；带工具�
 
 把 `max_tokens` 设成模型一轮能产出的量（对这些模型 4096 就够），`agent.max_context_messages` 别太大：一个 8k 上下文窗口的本地 8B 模型，工具结果一开始回传，很快就满了。
 
-在内容里输出 `<think>…</think>` 的模型也有处理：推理部分被单独分出来，只在 `agent.show_thinking = true` 时显示。
+在内容里输出 `<think>…</think>` 的模型也有处理：推理部分被单独分出来，只在 `agent.show_thinking = true` 时显示。开着这个开关时，服务商流式送来的推理（Chat Completions 分块里的 `reasoning_content`，Responses API 的推理增量）会在模型思考的当下就显示出来：控制台里是一行暗色的 `⌗`，网页控制台里在气泡中；回答一开始，它就收进「显示思考」的折叠里，随回复保存的只有完整的推理。
 
 ## `[image]` 和 `[video]` {#image-and-video}
 
-形象工作室的图片和形象的短视频不在聊天模型的主机上生成时，从哪里来。两个槽位都空（默认）时按一个顺序来（模型约定，0.1.41）：聊天服务商自己的图片模型（它有的话），账号的中继、阿里云百炼，以及目录里任何带 `image` 的服务商（它的 `defaults.image`；`[llm] image_model` / `video_model` 仍可指定别的）；否则在你登录了 nanoMuse Cloud 时是账号的中继，哪怕聊天模型在别处；再否则没有。短视频同理：图片主机会说视频 API 就用它，否则登录时用账号 key 走中继。设一个槽位，就能换到别处画，或者在聊天模型是 DeepSeek、ChatGPT 套餐或本地模型而你没有登录时才有地方画：
+形象工作室的图片和形象的短视频不在聊天模型的主机上生成时，从哪里来。两个槽位都空（默认）时按一个顺序来（模型约定，0.1.41）：聊天服务商自己的媒体模型（目录里带 `image` / `video` 的服务商，用对应的默认模型；`[llm] image_model` / `video_model` 仍可指定别的），然后是菜单明确提供这项媒体能力的已登录中继，最后是你第一家能做这件事的服务商。公共 nanoMuse Cloud 的菜单不再提供生图或生视频，因此它的用户必须接入自己的服务商和 API key；自己部署中继的运营者仍可明确开启旧媒体代理。设一个槽位，就能换到别处生成，或者在聊天模型是 DeepSeek、ChatGPT 套餐或本地模型时给媒体功能一个来源：
 
 ```toml
 [image]
@@ -175,7 +175,9 @@ instructions         = ""              # extra rules appended to the system prom
 
 `language = "auto"` 时，系统提示词会点明回复语言并告诉模型用它回答：客户端随消息送来了界面语言（网页控制台会送，即 `POST /api/threads/{id}/send` 的 `language`；hub 上的 `task` 也可以带）就用界面语言，否则按最近一条用户消息的文字书写系统判断。笼统的一句「用用户的语言回复」在某些模型上不可靠；点名就管用。固定的 `language` 优先于两者。
 
-`max_context_images` 是给手用的。在屏幕上跑一次任务，每一步都会追加一张截图，而整段对话每一步都要重新上传，所以十几张全尺寸图片曾经超过中继的请求体上限（413 `too_large`，0.1.37）。现在只带最新的四张，每张缩到最多两百万像素；更早的换成一行说明，模型仍然知道那里有过一张截图。桌面版的 harness 在它那一侧守着同样的预算。
+`max_context_images` 是给手用的。在屏幕上跑一次任务，每一步都会追加一张截图，而整段对话每一步都要重新上传，所以十几张全尺寸图片曾经超过中继的请求体上限（413 `too_large`，0.1.37）。现在只带最新的四张，每张缩到最多两百万像素；更早的换成一行说明，模型仍然知道那里有过一张截图。桌面版的 harness 按字节而不是按张数算（它的适配器只认字节）：一次请求里图片的 base64 合计不超过 2 MiB，大约是最新的四到八张截图，更早的同样换成一行说明。
+
+`max_context_messages` 尽量从用户消息的边界开始保留近期历史。如果单轮对话就填满了窗口，运行时会保留最新消息，并补全截断位置的整组工具调用与结果，因此消息数可能略高于配置值。已保存的对话历史不受影响。
 
 ## `[sync]` {#sync}
 
@@ -201,7 +203,7 @@ remote_control = true
 name = ""            # 空：用主机名
 ```
 
-`[cloud]` 是这个运行时登录的中继（[cloud.md](cloud.md)）：`base_url` 是它的公网地址（按 [self-hosting.md](self-hosting.md) 自己架一台后填这里）；`required = false` 允许首次运行不登录账号就完成，适合完全不用中继的运行时；`sync` 是整个账号「数据控制 → 同步」开关的默认值，人一旦选过，以选择为准；`models = false`（控制台里的「使用 nanoMuse Cloud 模型」开关，存在 app-settings 里）把账号的模型从动手、生成图片、短视频的自动顺序和服务商列表里拿掉，登录保持不变，于是除了明确点下的「这次改用 nanoMuse Cloud」，没有什么会消耗额度。账号密钥本身是保险库里的 `NANOMUSE_CLOUD_KEY`。
+`[cloud]` 是这个运行时登录的中继（[cloud.md](cloud.md)）：`base_url` 是它的公网地址（按 [self-hosting.md](self-hosting.md) 自己架一台后填这里）；`required = false` 允许首次运行不登录账号就完成，适合完全不用中继的运行时；`sync` 是整个账号「数据控制 → 同步」开关的默认值，人一旦选过，以选择为准；`models = false`（控制台里的「使用 nanoMuse Cloud 模型」开关，存在 app-settings 里）会把该中继实时声明的全部模型从自动顺序和服务商列表里拿掉，登录保持不变，于是除了明确点下的「这次改用 nanoMuse Cloud」，没有什么会消耗额度。nanoMuse 公共 Cloud 目前只提供对话和界面操作模型；生成图片和短视频需要用户添加自己的服务商。自建中继可以声明不同能力。账号密钥本身是保险库里的 `NANOMUSE_CLOUD_KEY`。
 
 `[hub]` 是把这台电脑当作账号的一台设备（[hub.md](hub.md)）：`enabled` 表示账号登录后就加入 hub；`remote_control = false` 时，其他设备只能从这台拿到 `info`，别的什么都做不了；`name` 是其他设备对它的称呼（空：用主机名）。`device_id` 按安装生成，由 App 写入。
 
@@ -325,19 +327,21 @@ url  = "{{vault:CONTACTS_NEXTCLOUD}}"   # a link, kept in the vault: nanomuse va
 
 ### 网页搜索 {#web-search}
 
-谁来回答 `web_search`。DuckDuckGo 什么都不需要，是默认值，但它是抓网页而不是正规接口：会限流，时不时出问题。想要每次都能搜到，指定一家带 API 的服务商：带 key 的 [Brave Search](https://brave.com/search/api/)、[Tavily](https://app.tavily.com/) 或 [Serply](https://serply.io/)（Google 搜索结果），有没有 key 都行的 [You.com](https://you.com/platform/api-keys)，或者你自己跑的一个 [SearXNG](https://docs.searxng.org/) 实例（`search.formats` 里要有 `json`）。手机上同样的选项在「连接 → 网页搜索」，key 以 `SEARCH_API_KEY` 存进保险库，「测试」跑一次搜索。
+谁来回答 `web_search`。DuckDuckGo 什么都不需要，是默认值，但它是抓网页而不是正规接口：会限流，时不时出问题。想要每次都能搜到，指定一家带 API 的服务商：带 key 的 [Brave Search](https://brave.com/search/api/)、[Tavily](https://app.tavily.com/) 或 [Serply](https://serply.io/)（Google 搜索结果），有没有 key 都行的 [You.com](https://you.com/platform/api-keys) 和 [Parallel](https://docs.parallel.ai/integrations/mcp/search-mcp)，或者你自己跑的一个 [SearXNG](https://docs.searxng.org/) 实例（`search.formats` 里要有 `json`）。手机上同样的选项在「连接 → 网页搜索」，key 以 `SEARCH_API_KEY` 存进保险库，「测试」跑一次搜索。
 
 ```toml
 [connectors.search]
-provider = "duckduckgo"          # duckduckgo | brave | tavily | serply | you | searxng
-api_key  = "{{vault:SEARCH_API_KEY}}"   # brave / tavily / serply，以及有 key 的 you：nanomuse vault set SEARCH_API_KEY
+provider = "duckduckgo"          # duckduckgo | brave | tavily | serply | you | parallel | searxng
+api_key  = "{{vault:SEARCH_API_KEY}}"   # brave / tavily / serply，以及有 key 的 you 或 parallel：nanomuse vault set SEARCH_API_KEY
 base_url = ""                    # searxng: your instance, e.g. "http://127.0.0.1:8080"
 fallback = true                  # false：搜索失败就失败，不再转去 DuckDuckGo
 ```
 
 You.com 不带 key 时走 `api.you.com`，每个地址每天 100 次，不用注册；超出后搜索会说明原因，由 DuckDuckGo 补答一次。带 key 时走 `ydc-index.io`，也就是额度更高的付费 Search API；哨兵显示的是这次搜索真正去的主机。发往 You.com 的请求带 `youdotcom-integration/nano-muse-nanomuse` 这个 User-Agent，是应对方要求加的，方便他们认出来自 nanoMuse 的流量；除此之外不多发任何东西，其他服务商也不会收到它。
 
-不管选的是谁，一次失败的搜索（key 过期、被限流、实例挂了）都改由 DuckDuckGo 回答，只补这一次，并在结果顶上加一条说明，任务就能继续（这时查询词除了到你选的服务商，也会到 DuckDuckGo 的主机；不希望这样，就在 `[connectors.search]` 下设 `fallback = false`）；`nanomuse doctor` 会报告缺了必要配置的服务商。工具的 `region` 参数（`cn-zh`、`us-en`）按每家服务商自己的写法传过去。服务商的主机是你选定的目的地，所以读过私密数据之后再搜索，不像去一个陌生主机那样需要审批（见[污点追踪](sentinel.md#taint-tracking)）；对搜索结果做 `web_fetch` 仍然需要。
+Parallel 走的是它的 [Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)（`search.parallel.ai`）里的 `web_search` 工具，每次搜索调用一次，查询词同时作为搜索目标和唯一的一条关键词。不带 key 时免费，用的是 Parallel 的 Fast 模式，限额较低，不用注册；运行时会带一个随机的会话 id，重启之前每次搜索都用同一个，Parallel 靠它统计免费用量。在 [platform.parallel.ai](https://platform.parallel.ai/) 拿到的 key 以 Bearer token 发送，限额更高。每条结果的摘要是它的几段摘录拼成的一行。Parallel 回了错误（工具报错、被限流、key 被拒、回复里没有结果）时，说明或失败信息里写的就是这个错误。
+
+不管选的是谁，一次失败的搜索（key 过期、被限流、实例挂了）都改由 DuckDuckGo 回答，只补这一次，并在结果顶上加一条说明，任务就能继续（这时查询词除了到你选的服务商，也会到 DuckDuckGo 的主机；不希望这样，就在 `[connectors.search]` 下设 `fallback = false`）；`nanomuse doctor` 会报告缺了必要配置的服务商。工具的 `region` 参数（`cn-zh`、`us-en`）按每家服务商自己的写法传给支持它的服务商；Tavily 和 Parallel 不接收这个参数。服务商的主机是你选定的目的地，所以读过私密数据之后再搜索，不像去一个陌生主机那样需要审批（见[污点追踪](sentinel.md#taint-tracking)）；对搜索结果做 `web_fetch` 仍然需要。
 
 ## `[triggers]` {#triggers}
 
@@ -356,7 +360,7 @@ hook_min_seconds  = 10   # deliveries to one webhook closer together than this g
 ```toml
 [browser]
 enabled    = true      # pip install "nanomuse[browser]" && playwright install chromium
-backend    = "auto"    # auto | playwright | device — the phone's own WebView when a nanoMuse app is connected, Chromium otherwise
+backend    = "auto"    # auto | playwright | device; device: the phone's own WebView when a nanoMuse app is connected, Chromium otherwise
 profile    = ""        # mobile | desktop | "" (mobile on the phone, desktop on a computer)
 headless   = true      # Playwright only
 timeout_ms = 30000
@@ -369,9 +373,9 @@ timeout_ms = 30000
 ```toml
 [hands]
 enabled         = false    # the switch is Devices → Hands on this computer in the app
-backend         = "auto"   # auto | desktop | pyautogui | xdotool (X11) — desktop: the desktop app's own hands (auto takes them when the app set NANOMUSE_OPERATOR_URL)
-mode            = "auto"   # auto | screen | window — window: one app's window on macOS, events to its process, your mouse untouched; auto = window on macOS once an app is named
-coords          = "pixels" # pixels | norm1000 — what the model's x, y mean: pixels of the picture it was shown (default), or a 0–1000 grid over it
+backend         = "auto"   # auto | desktop | pyautogui | xdotool (X11); desktop: the desktop app's own hands (auto takes them when the app set NANOMUSE_OPERATOR_URL)
+mode            = "auto"   # auto | screen | window; window: one app's window on macOS, events to its process, your mouse untouched; auto = window on macOS once an app is named
+coords          = "pixels" # pixels | norm1000; what the model's x, y mean: pixels of the picture it was shown (default), or a 0–1000 grid over it
 max_image_width = 1600
 settle_s        = 0.6
 ```
@@ -388,7 +392,7 @@ settle_s        = 0.6
 [gui]
 enabled          = false
 provider         = "openai"          # the operator's own model; openai | openai_responses | chatgpt | a catalogue id
-model            = ""                # empty: the main [llm] model does it — it must take images, the screen is a picture
+model            = ""                # 留空 = 自动（按下面的顺序：中继的手的模型、聊天服务商自己的、或者聊天模型）；不管是哪个都得能看图，屏幕是一张图
 base_url         = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key          = "{{vault:GUI_API_KEY}}"
 max_steps        = 0                 # 一次 phone_task 最多走多少步；0 = 不设上限
@@ -397,7 +401,7 @@ reconnect_grace_s = 30.0             # 手机掉线后，进行中的任务等�
 sensitive_words  = ["确认支付", "立即付款", "转账", "提交订单", "发送", "删除", "pay now", "place order", "send", "delete"]  # a tap on these asks first; 这里是节选，默认列表有 22 个词
 ```
 
-`base_url` 和 `api_key` 为空时回退到 `[llm]`。空的 `model` 按一个顺序来（模型约定，0.1.41）：以中继为聊天模型时，是中继的手的模型（`qwen3.8-27b`，除非 `/v1/models` 另有指定），而不是聊天模型（聊天的默认模型看得懂图片，但手需要的是训练过、会在屏幕上指东西的模型）；聊天服务商是目录里带 `vision` 的自有服务商时，是它自己的手的模型（`defaults.hands`，百炼是 `qwen3.8-27b`，智谱是 `glm-4.6v`），用聊天的 key；聊天服务商看不了图（按目录 id 或主机识别出的本地服务器）而账号已登录时，是中继的手的模型，用账号的 key，聊天模型留在原处；其余情况是聊天模型，目录里没有的主机也是。明确写了 `model` 总是优先。只有操作器的 `base_url` 是另一个服务时才需要 key。每次手机任务的轨迹都进 `<data_dir>/phone-traces/`（保留最近 200 条；`nanomuse phone traces`）。
+`base_url` 和 `api_key` 为空时回退到 `[llm]`。空的 `model` 按一个顺序来（模型约定，0.1.41）：以中继为聊天模型时，是 `/v1/models` 推荐给 `gui` 的模型（公共 Cloud 目前让同一个多模态 `Qwen/Qwen3.6-27B-FP8` 同时负责聊天和操作屏幕）；聊天服务商是目录里带 `vision` 的自有服务商时，是它自己的手的模型（`defaults.hands`，百炼是 `qwen3.8-27b`，智谱是 `glm-4.6v`），用聊天的 key；聊天服务商看不了图（按目录 id 或主机识别出的本地服务器）而账号已登录时，是中继的手的模型，用账号的 key，聊天模型留在原处；其余情况是聊天模型，目录里没有的主机也是。明确写了 `model` 总是优先。只有操作器的 `base_url` 是另一个服务时才需要 key。每次手机任务的轨迹都进 `<data_dir>/phone-traces/`（保留最近 200 条；`nanomuse phone traces`）。
 
 应用层通过 `PUT /api/connections/gui` 设置这个槽位，它接受的 `provider` 和 `PUT /api/connections/llm` 一样：协议（`openai`、`openai_responses`）、`chatgpt`，或者 `bailian` 这样的目录 id，后者自带接口地址（`base_url` 可以留空）；目录里没有的 id，或运行时不会说其协议的 id，回 400 并列出可选项。回答（以及 `GET /api/connections` → `gui`）带 `provider` 原样、`provider_id`（协议加 URL 对应的目录条目）、`effective_model` 和 `effective_source`（`gui`、`chat` 或 `cloud`）。
 
@@ -418,6 +422,8 @@ url                = "http://localhost:8000/mcp"   # streamable HTTP; falls back
 risk               = "sensitive"
 egress             = true         # counts as network egress for taint tracking
 reads_private_data = true         # taints the conversation when called
+connect_timeout_s  = 30           # 握手（连接、initialize、工具列表）的秒数；超时就跳过这个服务器
+call_timeout_s     = 120          # 一次调用的秒数；超时这次调用失败，任务继续
 
 # one tool of a server may differ from the server's defaults
 [mcp.servers.tools.list_events]
@@ -426,6 +432,8 @@ risk               = "moderate"
 risk               = "sensitive"
 reads_private_data = false
 ```
+
+`egress` 不写时由地址决定：`url` 指向别的主机，每次调用的参数都会发过去，就按向那台主机外发算（污点追踪会在读过私密数据之后、调用它之前先问一句，除非主机在 `egress_allowlist` 里）；`command` 或回环地址不算。想说得不一样就显式写 `egress`。审批卡片和审计日志只记工具名和参数的形状（字符串的长度、列表的长度、对象的键），从不记参数的值。
 
 `tools` 是可选的，按工具名（不带 `<server>__` 前缀）逐个写；没写的都回退到服务器的值。手机自带的工具就是这样拿到默认值的：在手机上，App 的能力不用任何配置就以 `device` 这个服务器的身份出现（[device.md](device.md)），逐工具的表来自 `nanomuse/runtime.py`。
 

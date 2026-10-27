@@ -68,6 +68,54 @@ test('an approval the chat answers first clears the stage', async () => {
   assert.equal(desk.list().length, 0)
 })
 
+test('a hands step names the app it asked in; another tool names none', async () => {
+  const desk = new ApprovalDesk(() => undefined, () => false, (r) => (r.toolName === 'mcp__nanomuse__computer_act' ? 'WeChat' : ''))
+  void desk.handle({ ...req('c4'), toolName: 'mcp__nanomuse__computer_act' }, () => new Promise(() => undefined))
+  void desk.handle(req('c5'), () => new Promise(() => undefined))
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(desk.list().map((a) => a.app), ['WeChat', ''])
+})
+
+test('a step in a scheduled run names the task that started it', async () => {
+  const desk = new ApprovalDesk(() => undefined, () => false, () => 'WeChat', (r) => (r.agent.session.id === 's-task' ? 'schedule-a' : ''))
+  void desk.handle(req('c6', 's-task'), () => new Promise(() => undefined))
+  void desk.handle(req('c7'), () => new Promise(() => undefined))
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(desk.list().map((a) => a.scheduleId), ['schedule-a', ''])
+})
+
+test('how a question was settled is told: a grant at once, the stage or the card as the person, a cancelled one as such, with the wait', async () => {
+  const told = []
+  const settled = (req, outcome, by, waitedMs) => told.push([req.callId, outcome, by, typeof waitedMs === 'number' && waitedMs >= 0])
+  const desk = new ApprovalDesk(() => undefined, (req) => req.callId === 'g1', () => '', () => '', settled)
+  assert.equal(await desk.handle(req('g1'), async () => 'rejected'), 'allowed-once')
+  assert.deepEqual(told, [['g1', 'allowed-once', 'grant', true]])
+
+  const stage = desk.handle(req('p1'), () => new Promise(() => undefined))
+  await new Promise((r) => setImmediate(r))
+  desk.decide('p1', true)
+  assert.equal(await stage, 'allowed-once')
+  assert.deepEqual(told[1], ['p1', 'allowed-once', 'person', true])
+
+  assert.equal(await desk.handle(req('p2'), async () => 'rejected'), 'rejected')
+  assert.deepEqual(told[2], ['p2', 'rejected', 'person', true])
+
+  const asker = new AbortController()
+  const cancelled = desk.handle({ ...req('p3'), signal: asker.signal }, () => new Promise(() => undefined))
+  await new Promise((r) => setImmediate(r))
+  asker.abort(new Error('stopped'))
+  assert.equal(await cancelled, 'cancelled')
+  assert.deepEqual(told[3], ['p3', 'cancelled', 'cancelled', true])
+})
+
+test('a request a grant covers is allowed without a card', async () => {
+  const desk = new ApprovalDesk(() => undefined, (r) => r.agent.session.id === 's-granted')
+  let asked = false
+  assert.equal(await desk.handle(req('c6', 's-granted'), async () => { asked = true; return 'rejected' }), 'allowed-once')
+  assert.equal(asked, false)
+  assert.equal(await desk.handle(req('c7', 's-other'), async () => 'rejected'), 'rejected')
+})
+
 test('approvals of an excluded session go straight to the next answerer', async () => {
   const desk = new ApprovalDesk(() => undefined)
   desk.exclude('task-session')
@@ -207,7 +255,12 @@ test('shared connectors carry what and where, never how', () => {
   assert.equal(back[3].auth, 'open')
 })
 
-test('the chat and hands defaults follow the relay\'s `for`, with the 0.1.34 names first', () => {
+test('the chat and hands defaults follow the relay lane recommendation, with old menus supported', () => {
+  const current = [
+    { id: 'Qwen/Qwen3.6-27B-FP8', kind: 'chat', recommended: true, recommendedFor: ['chat', 'gui'], inputModalities: ['text', 'image'], for: ['chat', 'gui'] },
+  ]
+  assert.equal(pickChatModel(current)?.id, 'Qwen/Qwen3.6-27B-FP8')
+  assert.equal(pickHandsModel(current)?.id, 'Qwen/Qwen3.6-27B-FP8')
   const models = [
     { id: 'deepseek-v4.1-flash', kind: 'chat', recommended: false, inputModalities: ['text', 'image'], for: ['chat'] },
     { id: 'deepseek-v4', kind: 'chat', recommended: true, inputModalities: ['text', 'image'], for: ['chat'] },
@@ -216,6 +269,12 @@ test('the chat and hands defaults follow the relay\'s `for`, with the 0.1.34 nam
   ]
   assert.equal(pickChatModel(models)?.id, 'deepseek-v4.1-flash')
   assert.equal(pickHandsModel(models)?.id, 'qwen3.8-27b')
+  const future = [
+    { id: 'old-chat', kind: 'chat', recommended: true, inputModalities: ['text'], for: ['chat'] },
+    { id: 'next', kind: 'chat', recommended: true, recommendedFor: ['chat', 'gui'], inputModalities: ['text', 'image'], for: ['chat', 'gui'] },
+  ]
+  assert.equal(pickChatModel(future)?.id, 'next')
+  assert.equal(pickHandsModel(future)?.id, 'next')
   assert.equal(pickChatModel([{ id: 'old', kind: 'chat', recommended: true, inputModalities: ['text'] }])?.id, 'old')
   assert.equal(pickHandsModel([{ id: 'old', kind: 'chat', recommended: true, inputModalities: ['text'] }]), undefined)
   assert.equal(takesImages({ id: 'deepseek-v4', inputModalities: ['text', 'image'] }), false)
@@ -224,7 +283,7 @@ test('the chat and hands defaults follow the relay\'s `for`, with the 0.1.34 nam
   assert.equal(takesImages({ id: 'qwen3-vl', inputModalities: ['text', 'image'] }), true)
 })
 
-test('the provider row carries the image budget of a request through the relay (413 too_large): 5 MiB of base64 images, 2 Mpx a picture, the per-image byte cap left to dsh', async () => {
+test('the provider row carries the image budget of a request through the relay: 2 MiB of base64 images (about the newest four to eight screenshots), 2 Mpx a picture, the per-image byte cap left to dsh', async () => {
   const { providerRowFor, IMAGE_BUDGET } = await import('../lib/cloud.js')
   const row = providerRowFor('https://relay.test/v1', [
     { id: 'deepseek-v4.1', name: 'DeepSeek V4.1', kind: 'chat', recommended: true, inputModalities: ['text', 'image'], for: ['chat'] },
@@ -233,12 +292,15 @@ test('the provider row carries the image budget of a request through the relay (
   ])
   assert.equal(row.api, 'openai-completions')
   assert.equal(row.baseURL, 'https://relay.test/v1')
-  assert.equal(row.maxRequestImageBytes, 5 * 1024 * 1024)
+  assert.equal(row.maxRequestImageBytes, 2 * 1024 * 1024)
   assert.equal(row.requestImagePixelBudget, 2 * 1024 * 1024)
   assert.equal(row.requestImageMaxBytes, undefined)
-  assert.deepEqual(IMAGE_BUDGET, { maxRequestImageBytes: 5 * 1024 * 1024, requestImagePixelBudget: 2 * 1024 * 1024 })
-  // under the relay's 6 MiB cap with room for the text
+  assert.deepEqual(IMAGE_BUDGET, { maxRequestImageBytes: 2 * 1024 * 1024, requestImagePixelBudget: 2 * 1024 * 1024 })
+  // far under the relay's body cap (16 MB by default), with room for the text
   assert.ok(row.maxRequestImageBytes < 6 * 1024 * 1024)
   assert.deepEqual(row.models.map((m) => m.id), ['deepseek-v4.1'])
   assert.deepEqual(row.models[0].input, ['text', 'image'])
+  assert.equal(row.headers, undefined, 'no device id, no header')
+  const named = providerRowFor('https://relay.test/v1', [], 'pc-dsh-0a1b2c3d4e5f')
+  assert.deepEqual(named.headers, { 'x-nanomuse-device': 'pc-dsh-0a1b2c3d4e5f' }, 'the device rides on every chat call for the record')
 })

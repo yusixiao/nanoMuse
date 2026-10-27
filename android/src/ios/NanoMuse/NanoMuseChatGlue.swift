@@ -57,6 +57,8 @@ extension AIChatViewModel {
     func nmAfterTurn() {
         let key = nmSessionKey
         let reply = nmLastAssistantText()
+        // the record hears a turn that ended in an error (a Stop was told at the Stop); the next turn is the person's again
+        NanoMuseFeedback.shared.turnEnded(session: key, errored: messages.last.map { $0.role == .assistant && !($0.error ?? "").isEmpty } ?? false)
         NanoMuseGoalFlow.afterTurn(session: key, assistantText: reply)
         NanoMuseFeedFlow.afterTurn(session: key, assistantText: reply)
         NanoMuseFirstConversation.shared.afterTurn(session: key, assistantText: reply, vm: self)
@@ -146,8 +148,9 @@ extension AIChatViewModel {
     // MARK: C9 presence
 
     /// Put "{device} is working…" under the last message when it is another device's user line
-    /// and presence says that device is at work on this conversation; take it off otherwise
-    /// (the reply arrived, presence said done, or ten minutes passed). Cheap: the last row only.
+    /// and presence says that device is at work on this conversation — with the run's step or
+    /// "waiting for you" when the frame said so (relay 0.31); take it off otherwise (the reply
+    /// arrived, presence said done, or ten minutes passed). Cheap: the last row only.
     func nmApplyPresence() {
         let key = nmSessionKey
         let last = messages.last
@@ -156,7 +159,7 @@ extension AIChatViewModel {
         if remote, let sid = sessionId, let cid = NanoMuseSync.shared.cid(for: sid) {
             entry = NanoMusePresence.shared.working(for: cid)
         }
-        let line = NanoMusePresence.line(lastIsRemoteUser: remote, lastFromDevice: last?.nmFromDevice, entry: entry, me: NanoMuseHub.shared.deviceId)
-        NanoMusePresence.shared.show(line, on: last, session: key)
+        let device = NanoMusePresence.line(lastIsRemoteUser: remote, lastFromDevice: last?.nmFromDevice, entry: entry, me: NanoMuseHub.shared.deviceId)
+        NanoMusePresence.shared.show(device.map { NanoMusePresence.sentence(device: $0, entry: entry) }, on: last, session: key)
     }
 }

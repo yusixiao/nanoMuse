@@ -129,6 +129,9 @@
     <string name="nm_routine_paused">ปิด</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">กิจวัตร · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">เพิ่มเวลาอื่น</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">กำหนดไว้สำหรับ %1$s</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">ไอเดีย</string>
@@ -830,16 +833,21 @@
     <string name="nm_cloud_ev_contribute_default">การควบคุมข้อมูล: เปิดสำหรับบัญชีใหม่</string>
     <string name="nm_data_title">การควบคุมข้อมูล</string>
     <string name="nm_data_improve">ช่วยปรับปรุงโมเดล AI ของ nanoMuse</string>
-    <string name="nm_data_why">ขณะที่เปิดอยู่ ข้อความในแชทของคุณกับโมเดลของ nanoMuse Cloud (สิ่งที่คุณเขียน สิ่งที่มันตอบ และเครื่องมือที่มันเลือกเรียก) จะถูกเก็บไว้บนรีเลย์เพื่อฝึกโมเดลเปิดของชุมชนเอง ไม่รวมความทรงจำหรือ SOUL (พรอมต์ระบบ) ไม่รวมผลลัพธ์ที่เครื่องมือส่งกลับ ไม่รวมรูปภาพ และไม่เก็บคู่กับตัวตนของคุณเด็ดขาด คีย์ API ของคุณเองไม่เคยผ่านรีเลย์</string>
+    <string name="nm_data_why">ขณะที่เปิดอยู่ ข้อความในแชทเหล่านี้ (สิ่งที่คุณเขียน สิ่งที่โมเดลตอบ และเครื่องมือที่มันเลือกเรียก) จะเข้าชุดฝึกของโมเดลเปิดของชุมชนด้วย: ไม่รวมความทรงจำหรือ SOUL ของคุณ (พรอมต์ระบบ) สิ่งที่เครื่องมือส่งกลับ รูปภาพ หรือตัวตนของคุณ เมื่อปิด จะไม่มีอะไรเข้าเพิ่มอีก ส่วนบันทึกเองยังอยู่จนกว่าคุณจะลบ รอบที่ใช้คีย์ของคุณเองอยู่ในบันทึกเท่านั้น ไม่เคยอยู่ในชุดฝึก</string>
+    <string name="nm_data_record_why">nanoMuse Cloud เก็บทุกรอบสนทนาของคุณกับโมเดลของมันไว้ครบถ้วนเป็นบันทึกของบัญชีคุณ: สิ่งที่ส่งไปให้โมเดล สิ่งที่มันตอบ เครื่องมือและสิ่งที่เครื่องมือส่งกลับ รูปภาพเก็บเป็นไฟล์ ตั้งแต่แอป 1.0.7 รอบที่ตอบด้วยคีย์ของคุณเองก็เข้ามาด้วย นี่คือข้อมูลของคุณ มีเพียงอุปกรณ์ของคุณและผู้ที่ดูแลรีเลย์เท่านั้นที่อ่านได้</string>
+    <string name="nm_data_record_held">บันทึกมี %1$d รอบสนทนาของบัญชีนี้ (%2$d รอบใช้คีย์ของคุณเอง) และรูปภาพ %3$d รูป</string>
+    <string name="nm_data_record_empty">บันทึกยังไม่มีอะไรจากบัญชีนี้</string>
+    <string name="nm_data_record_keep_days">รีเลย์นี้เก็บรอบสนทนาไว้ %1$d วัน</string>
+    <string name="nm_data_record_keep_forever">จะอยู่จนกว่าคุณจะลบ</string>
     <string name="nm_data_default_on">บัญชีใหม่เริ่มต้นด้วยการเปิด</string>
     <string name="nm_data_default_off">บัญชีใหม่เริ่มต้นด้วยการปิด</string>
     <string name="nm_data_kept">เก็บไว้แล้ว %1$d รอบสนทนา</string>
     <string name="nm_data_on_toast">เปิดแล้ว ปิดที่นี่ได้ทุกเมื่อ</string>
-    <string name="nm_data_off_toast">ปิดแล้ว จะไม่เก็บอะไรเพิ่มอีก</string>
-    <string name="nm_data_delete">ลบบทสนทนาที่เก็บไว้</string>
-    <string name="nm_data_delete_sub">ลบทุกรอบสนทนาที่เก็บจากบัญชีนี้ ไม่ว่าตอนนี้สวิตช์จะเปิดหรือปิด การปิดสวิตช์จะยังคงเก็บสิ่งที่เก็บไว้แล้วจนกว่าคุณจะลบที่นี่</string>
-    <string name="nm_data_delete_confirm">บทสนทนาที่เก็บไว้จะถูกลบออกจากเซิร์ฟเวอร์ ย้อนกลับไม่ได้</string>
-    <string name="nm_data_deleted">ลบแล้ว %1$d รอบสนทนา</string>
+    <string name="nm_data_off_toast">ปิดแล้ว จะไม่มีอะไรเข้าชุดฝึกอีก</string>
+    <string name="nm_data_delete">ลบบันทึกและบทสนทนาที่เก็บไว้</string>
+    <string name="nm_data_delete_sub">ลบบันทึกแชทของบัญชีนี้และทุกรอบฝึกที่เก็บไว้จากบัญชีนี้ ไม่ว่าตอนนี้สวิตช์จะเปิดหรือปิด การปิดสวิตช์อย่างเดียวยังคงสิ่งที่เก็บไว้จนกว่าคุณจะลบที่นี่</string>
+    <string name="nm_data_delete_confirm">บันทึกแชทของคุณและรอบฝึกที่เก็บไว้จะถูกลบออกจากเซิร์ฟเวอร์ ย้อนกลับไม่ได้</string>
+    <string name="nm_data_deleted">ลบแล้ว: บันทึก %1$d รอบ ไฟล์ %2$d ไฟล์ รอบฝึก %3$d รอบ</string>
     <string name="nm_data_sign_in">ลงชื่อเข้าใช้ nanoMuse Cloud เพื่อใช้งาน</string>
     <string name="nm_data_privacy">นโยบายความเป็นส่วนตัว</string>
     <string name="nm_data_status_on">เปิด</string>
@@ -1045,6 +1053,8 @@
     <string name="nm_sync_side_title">ซิงก์แชทย่อยด้วย</string>
     <string name="nm_sync_side_sub">ปิด: แชทย่อยอยู่แค่ในอุปกรณ์นี้ เปิด: แชทย่อยของอุปกรณ์นี้ขึ้นไปที่บัญชี และแชทย่อยของอุปกรณ์อื่นก็มาที่นี่ด้วย</string>
     <string name="nm_sync_working">%1$s กำลังจัดการอยู่…</string>
+    <string name="nm_sync_working_step">%1$s กำลังจัดการอยู่: %2$s</string>
+    <string name="nm_sync_waiting">%1$s กำลังรอคุณอยู่</string>
     <string name="nm_devices_ask">ขอให้อุปกรณ์นี้ทำ</string>
     <string name="nm_devices_ask_hint">แตะอุปกรณ์ที่ออนไลน์อยู่เพื่อเขียนถึงมันจากแชท: ข้อความจะขึ้นต้นด้วย @ ตามด้วยชื่อของมัน และอุปกรณ์นั้นจะเป็นฝ่ายทำงาน</string>
     <string name="nm_reach_the_provider">ผู้ให้บริการ</string>
@@ -1123,7 +1133,6 @@
     <string name="nm_cloud_provider_no_delete">ผู้ให้บริการนี้คือบัญชี nanoMuse Cloud ของคุณ ปิดสวิตช์ด้านบนเพื่อเลิกใช้โมเดลของมัน หากต้องการออกจากระบบ ให้เปิด การตั้งค่า › nanoMuse Cloud</string>
     <string name="nm_welcome_own_key">ใช้คีย์ API ของตัวเองแทน</string>
     <string name="nm_useit_title">ใช้ทำอะไร</string>
-    <string name="nm_useit_body">เลือกว่าคีย์นี้จะรับผิดชอบอะไร ส่วนที่เหลือ nanoMuse Cloud ยังคงดูแล</string>
     <string name="nm_useit_body_signed_out">เลือกว่าคีย์นี้จะรับผิดชอบอะไร</string>
     <string name="nm_useit_use">ใช้</string>
     <string name="nm_useit_not_now">ไว้ก่อน</string>
@@ -1163,4 +1172,34 @@
     <string name="nm_font_scale_medium">ปานกลาง</string>
     <string name="nm_font_scale_large">ใหญ่</string>
     <string name="nm_font_scale_extra_large">ใหญ่มาก</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">ไฟล์ในแชท</string>
+    <string name="nm_backup_chat_files_on">ไฟล์แนบ ไฟล์ถ่ายโอน และไฟล์พื้นที่ทำงานทุกไฟล์ไปพร้อมกับข้อความ</string>
+    <string name="nm_backup_chat_files_off">เฉพาะข้อความ ไฟล์จะถูกระบุไว้แต่ไม่ถูกนำไปด้วย การกู้คืนจะนำแชทกลับมาโดยไม่มีไฟล์ แพ็กเกจจึงเล็กพอสำหรับเซิร์ฟเวอร์ที่ปฏิเสธการอัปโหลดขนาดใหญ่</string>
+    <string name="nm_backup_hint_too_large">เซิร์ฟเวอร์ปฏิเสธแพ็กเกจเพราะขนาด ส่วนใหญ่เป็นขีดจำกัดการอัปโหลดของเซิร์ฟเวอร์ (nginx: client_max_body_size) ให้เพิ่มขีดจำกัด หรือสำรองแชทโดยไม่รวมไฟล์</string>
+    <string name="nm_backup_delivery_failed">ส่งไม่สำเร็จ</string>
+    <string name="nm_backup_run_needs_passphrase">เปิดการเข้ารหัสอยู่ และต้องพิมพ์รหัสผ่านในหน้าสำรองข้อมูล การเรียกจากเชลล์ขอรหัสไม่ได้ ให้เริ่มสำรองข้อมูลจากหน้านั้น หรือปิดการเข้ารหัสที่นั่น</string>
+    <string name="nm_backup_run_started">เริ่มสำรองข้อมูลจากเชลล์แล้ว</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">โมเดลกำลังยุ่ง รอมาแล้ว %1$d วินาที</string>
+    <string name="nm_wait_queued">มี %1$d รายการอยู่ก่อนหน้า รอมาแล้ว %2$d วินาที</string>
+    <string name="nm_wait_next">ถึงคิวคุณถัดไป รอมาแล้ว %1$d วินาที</string>
+    <string name="nm_fb_up">ตอบได้ดี</string>
+    <string name="nm_fb_down">ตอบได้ไม่ดี</string>
+    <string name="nm_fb_why">ตรงไหนที่ไม่ดี</string>
+    <string name="nm_fb_reason_wrong">ตอบผิด</string>
+    <string name="nm_fb_reason_unhelpful">ไม่ช่วยอะไร</string>
+    <string name="nm_fb_reason_unsafe">ไม่ควรทำแบบนั้น</string>
+    <string name="nm_fb_reason_slow">ช้าเกินไป</string>
+    <string name="nm_fb_reason_other">อย่างอื่น</string>
+    <string name="nm_fb_skip">ข้าม</string>
+    <string name="nm_fb_thanks">รับทราบ ขอบคุณ</string>
+    <string name="nm_stop_why">ทำไมถึงหยุด</string>
+    <string name="nm_stop_reason_wrong">กำลังไปผิดทาง</string>
+    <string name="nm_stop_reason_slow">ช้าเกินไป</string>
+    <string name="nm_stop_reason_changed_mind">เปลี่ยนใจ</string>
+    <string name="nm_stop_reason_done">เสร็จแล้ว</string>
+    <string name="nm_stop_reason_other">อย่างอื่น</string>
 </resources>

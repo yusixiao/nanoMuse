@@ -50,22 +50,61 @@ def _safe_name(server: str, tool: str) -> str:
     return name[:64]
 
 
+#: argument names whose values are never written into a summary or the audit log
+_SECRET_KEYS = re.compile(
+    r"(pass(word|wd|phrase)?|secret|token|api[_-]?key|auth|credential|cookie|otp|code|pin)",
+    re.IGNORECASE,
+)
+
+
+def _shape(value: Any, depth: int = 0) -> Any:
+    """What of an argument the audit line may say: a string is its length, a number or
+    boolean itself, a list its length, an object its keys with their shapes; a key that
+    names a secret is only noted as present."""
+    if isinstance(value, dict):
+        if depth >= 2:
+            return {"keys": len(value)}
+        return {
+            str(k): "***" if _SECRET_KEYS.search(str(k)) else _shape(v, depth + 1)
+            for k, v in list(value.items())[:12]
+        }
+    if isinstance(value, str):
+        return f"str[{len(value)}]"
+    if isinstance(value, (list, tuple)):
+        return f"list[{len(value)}]"
+    return value
+
+
 class MCPTool(BaseTool):
     session: Any
     server: str
     original_name: str
+    #: the server's host when it is on another machine: the destination of every call
+    remote_host: str | None = None
+    #: seconds one call may take before it is given up as failed
+    call_timeout_s: float = 120.0
 
     def assess(self, args: dict[str, Any]) -> CallAssessment:
         base = super().assess(args)
-        base.summary = (
-            f"mcp:{self.server}.{self.original_name}({json.dumps(args, ensure_ascii=False)[:150]})"
-        )
+        # the shape of the arguments, not their values: an MCP argument can be a message
+        # body, a code, a key — and this line goes into the approval card and the audit log
+        shape = json.dumps(_shape(args), ensure_ascii=False, separators=(",", ":"))[:150]
+        base.summary = f"mcp:{self.server}.{self.original_name}({shape})"
+        if self.egress and self.remote_host:
+            base.egress_target = self.remote_host
+            base.target = self.remote_host
         return base
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         # Always send an object, even an empty one: servers built on zod (12306-mcp's
         # `get-current-date`, for one) reject a call with no `arguments` at all.
-        result = await self.session.call_tool(self.original_name, dict(kwargs))
+        try:
+            async with asyncio.timeout(self.call_timeout_s):
+                result = await self.session.call_tool(self.original_name, dict(kwargs))
+        except TimeoutError:
+            return ToolResult.fail(
+                f"the MCP server '{self.server}' did not answer within {self.call_timeout_s:g} s"
+            )
         parts: list[str] = []
         for item in getattr(result, "content", None) or []:
             itype = getattr(item, "type", "")
@@ -157,12 +196,37 @@ class MCPManager:
                     )
                     continue
                 await self._stack.enter_async_context(stack)
-                self._add_tools(cfg, session, listed)
-                logger.info("MCP server '{}' connected with {} tools", cfg.name, len(listed.tools))
+                if self._add_tools(cfg, session, listed):
+                    logger.info(
+                        "MCP server '{}' connected with {} tools", cfg.name, len(listed.tools)
+                    )
                 break
         return self.tools
 
-    def _add_tools(self, cfg: MCPServerSettings, session: Any, listed: Any) -> None:
+    def _add_tools(self, cfg: MCPServerSettings, session: Any, listed: Any) -> bool:
+        """The server's tools under their model-facing names. Two tools whose names become
+        the same after the character replacement or the 64-character cut would make one of
+        them unreachable (the model's call would always land on the other), so the server
+        is skipped with a warning naming both and nothing of it is added: the operator
+        renames the server or the tool, and the rest of the runtime starts as usual.
+        Returns whether the tools were added."""
+        existing = {tool.name: f"{tool.server}.{tool.original_name}" for tool in self.tools}
+        names: dict[str, str] = {}
+        for remote in listed.tools:
+            safe = _safe_name(cfg.name, remote.name)
+            original = f"{cfg.name}.{remote.name}"
+            other = names.get(safe) or existing.get(safe)
+            if other is not None:
+                logger.warning(
+                    "MCP server '{}' skipped: tool names {!r} and {!r} both become {!r}; "
+                    "rename one of them",
+                    cfg.name,
+                    other,
+                    original,
+                    safe,
+                )
+                return False
+            names[safe] = original
         for t in listed.tools:
             schema = _attr(t, "input_schema", "inputSchema") or {
                 "type": "object",
@@ -174,7 +238,7 @@ class MCPManager:
                 description=(t.description or f"{t.name} (from MCP server {cfg.name})")[:1000],
                 parameters=schema,
                 risk=policy.risk if policy and policy.risk is not None else cfg.risk,
-                egress=policy.egress if policy and policy.egress is not None else cfg.egress,
+                egress=policy.egress if policy and policy.egress is not None else cfg.sends_out,
                 reads_private_data=(
                     policy.reads_private_data
                     if policy and policy.reads_private_data is not None
@@ -183,8 +247,11 @@ class MCPManager:
                 session=session,
                 server=cfg.name,
                 original_name=t.name,
+                remote_host=cfg.remote_host,
+                call_timeout_s=cfg.call_timeout_s,
             )
             self.tools.append(tool)
+        return True
 
     async def _open(
         self, cfg: MCPServerSettings, transport: str, stack: AsyncExitStack
@@ -192,10 +259,13 @@ class MCPManager:
         """Transport, session, handshake and the tool list for one server, all on ``stack``."""
         from mcp import ClientSession
 
-        read, write = await self._open_transport(cfg, transport, stack)
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session, await session.list_tools()
+        # the whole handshake under one clock: a server that accepts the connection and
+        # then says nothing is skipped like one that is down
+        async with asyncio.timeout(cfg.connect_timeout_s):
+            read, write = await self._open_transport(cfg, transport, stack)
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            return session, await session.list_tools()
 
     async def _open_transport(
         self, cfg: MCPServerSettings, transport: str, stack: AsyncExitStack

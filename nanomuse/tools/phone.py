@@ -17,6 +17,7 @@ as read from the screenshot — and that is what is assessed and logged.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict
@@ -28,7 +29,15 @@ from nanomuse.phone.screen import Screen
 from nanomuse.prompts import detect_language
 from nanomuse.schema import RiskLevel, ToolResult
 from nanomuse.tools.base import BaseTool, CallAssessment, number_arg
-from nanomuse.tools.surface import PHONE, hand_over, inside, num, screen_result, wait_hold
+from nanomuse.tools.surface import (
+    PHONE,
+    hand_over,
+    inside,
+    num,
+    screen_result,
+    trusted_node_words,
+    wait_hold,
+)
 
 if TYPE_CHECKING:
     from nanomuse.phone.operator import PhoneOperator
@@ -177,8 +186,15 @@ class PhoneAct(BaseTool):
         words = list(self.gui.sensitive_words)
         risk, warnings, egress = RiskLevel.MODERATE, [], False
         hit: list[str] = []
-        if action in (*POINTED, "enter") and label and not self._is_app_name(label):
-            hit = [w for w in words if w.lower() in label.lower()]
+        # the sensitive words are looked for in the model's `label` and, when the device
+        # reported elements with bounds, in the words of the element under the finger; a
+        # screen without elements (a WebView, Flutter, a game) changes nothing here
+        trusted = trusted_node_words(screen, _point(args, "x", "y")) if action in POINTED else None
+        evidence = " / ".join(
+            part for part in (label, trusted or "") if part and not self._is_app_name(part)
+        )
+        if action in (*POINTED, "enter") and evidence:
+            hit = [w for w in words if w.lower() in evidence.lower()]
         if action in POINTED and not label:
             warnings.append("a tap with no `label`: nothing says what is under the finger")
         if action == "type" and args.get("submit"):
@@ -259,12 +275,20 @@ class PhoneAct(BaseTool):
                 params.update(direction=direction, distance=max(0.1, min(0.9, distance)))
                 start = _point(kwargs, "x", "y")
                 if start is not None:
+                    if screen is not None and not inside(start, screen, PHONE):
+                        return ToolResult.fail(
+                            f"({start[0]:g},{start[1]:g}) is outside the {screen.width}×{screen.height} screen"
+                        )
                     params["x"], params["y"] = start
             else:
                 end = _point(kwargs, "x2", "y2")
                 if end is None:
                     return ToolResult.fail(
                         "`swipe` needs `x2`/`y2` (where the finger ends) or a `direction`"
+                    )
+                if screen is not None and not inside(end, screen, PHONE):
+                    return ToolResult.fail(
+                        f"({end[0]:g},{end[1]:g}) is outside the {screen.width}×{screen.height} screen"
                     )
                 params["x2"], params["y2"] = end
         if action == "type":
@@ -278,6 +302,10 @@ class PhoneAct(BaseTool):
             )
             focus = _point(kwargs, "x", "y")
             if focus is not None:
+                if screen is not None and not inside(focus, screen, PHONE):
+                    return ToolResult.fail(
+                        f"({focus[0]:g},{focus[1]:g}) is outside the {screen.width}×{screen.height} screen"
+                    )
                 params["x"], params["y"] = focus
         if action == "open_app":
             app = str(kwargs.get("app") or "").strip()
@@ -327,12 +355,17 @@ class PhoneAct(BaseTool):
 
 
 def _point(args: dict[str, Any], kx: str, ky: str) -> tuple[float, float] | None:
+    """The two numbers, or None when either is missing or is not a finite number (NaN and
+    infinity would pass every comparison and reach the device as they are)."""
     if args.get(kx) is None or args.get(ky) is None:
         return None
     try:
-        return float(args[kx]), float(args[ky])
+        x, y = float(args[kx]), float(args[ky])
     except (TypeError, ValueError):
         return None
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return None
+    return x, y
 
 
 class PhoneTask(BaseTool):

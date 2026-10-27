@@ -138,6 +138,9 @@
     <string name="nm_routine_paused">Wył.</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">Rutyna · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">Dodaj kolejną godzinę</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">Zaplanowano na %1$s</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">Pomysły</string>
@@ -839,16 +842,21 @@
     <string name="nm_cloud_ev_contribute_default">Kontrola danych: włączona dla nowych kont</string>
     <string name="nm_data_title">Kontrola danych</string>
     <string name="nm_data_improve">Pomóż ulepszać modele AI nanoMuse</string>
-    <string name="nm_data_why">Gdy to jest włączone, tekst twoich czatów z modelami nanoMuse Cloud (co napisano, co odpowiedziano i jakie narzędzia wywołano) jest przechowywany na relayu, aby trenować własny otwarty model społeczności. Nie twoja pamięć ani SOUL (prompt systemowy), nie wyniki narzędzi, nie obrazy i nigdy obok tego, kim jesteś. Twój własny klucz API nigdy nie przechodzi przez relay.</string>
+    <string name="nm_data_why">Gdy to jest włączone, tekst tych czatów (co napisano, co odpowiedział model i jakie narzędzia wywołał) trafia też do zbioru treningowego własnego otwartego modelu społeczności: bez twojej pamięci i SOUL (promptu systemowego), bez wyników narzędzi, bez obrazów i bez tego, kim jesteś. Wyłączone: nic więcej nie trafia; sam zapis zostaje, aż go usuniesz. Tury z twoim własnym kluczem są w zapisie, nigdy w zbiorze treningowym.</string>
+    <string name="nm_data_record_why">nanoMuse Cloud zachowuje w całości każdą turę twoich czatów z jego modelami jako zapis twojego konta: co poszło do modelu, co odpowiedział, narzędzia i co zwróciły, obrazy jako pliki. Od aplikacji 1.0.7 dochodzą też tury, na które odpowiedziano twoim własnym kluczem. To twoje dane: czytać je mogą tylko twoje urządzenia i osoba prowadząca relay.</string>
+    <string name="nm_data_record_held">Zapis zawiera %1$d tur tego konta (%2$d z twoimi własnymi kluczami), z %3$d obrazami.</string>
+    <string name="nm_data_record_empty">Zapis nie zawiera jeszcze nic z tego konta.</string>
+    <string name="nm_data_record_keep_days">Ten relay zachowuje turę przez %1$d dni.</string>
+    <string name="nm_data_record_keep_forever">Zostaje, aż go usuniesz.</string>
     <string name="nm_data_default_on">Nowe konta zaczynają z włączonym.</string>
     <string name="nm_data_default_off">Nowe konta zaczynają z wyłączonym.</string>
     <string name="nm_data_kept">Dotąd zachowano %1$d tur.</string>
     <string name="nm_data_on_toast">Włączone. Wyłączysz tu w każdej chwili.</string>
-    <string name="nm_data_off_toast">Wyłączone. Nic więcej nie jest zachowywane.</string>
-    <string name="nm_data_delete">Usuń zachowane rozmowy</string>
-    <string name="nm_data_delete_sub">Usuwa każdą turę zachowaną z tego konta, niezależnie od tego, czy przełącznik jest teraz włączony. Wyłączenie przełącznika zostawia to, co już zachowano, dopóki nie usuniesz tego tutaj.</string>
-    <string name="nm_data_delete_confirm">Zachowane rozmowy zostaną usunięte z serwera. Tego nie da się cofnąć.</string>
-    <string name="nm_data_deleted">Usunięto %1$d tur.</string>
+    <string name="nm_data_off_toast">Wyłączone. Nic więcej nie trafia do zbioru treningowego.</string>
+    <string name="nm_data_delete">Usuń zapis i zachowane rozmowy</string>
+    <string name="nm_data_delete_sub">Usuwa zapis czatów tego konta i każdą zachowaną z niego turę treningową, niezależnie od tego, czy przełącznik jest teraz włączony. Wyłączenie przełącznika zostawia to, co zachowano, aż usuniesz to tutaj.</string>
+    <string name="nm_data_delete_confirm">Zapis twoich czatów i zachowane tury treningowe zostaną usunięte z serwera. Nie da się tego cofnąć.</string>
+    <string name="nm_data_deleted">Usunięto: %1$d tur zapisu, %2$d plików, %3$d tur treningowych.</string>
     <string name="nm_data_sign_in">Zaloguj się do nanoMuse Cloud, aby z tego korzystać.</string>
     <string name="nm_data_privacy">Polityka prywatności</string>
     <string name="nm_data_status_on">Wł.</string>
@@ -1057,6 +1065,8 @@
     <string name="nm_sync_side_title">Synchronizuj też czaty poboczne</string>
     <string name="nm_sync_side_sub">Wyłączone: czaty poboczne zostają na tym urządzeniu. Włączone: czaty poboczne tego urządzenia trafiają na konto, a czaty poboczne innych urządzeń przychodzą tutaj.</string>
     <string name="nm_sync_working">%1$s nad tym pracuje…</string>
+    <string name="nm_sync_working_step">%1$s nad tym pracuje: %2$s</string>
+    <string name="nm_sync_waiting">%1$s czeka na ciebie</string>
     <string name="nm_devices_ask">Zapytaj to urządzenie</string>
     <string name="nm_devices_ask_hint">Dotknij urządzenia, które jest online, aby pisać do niego z czatu: wiadomość zaczyna się od @ i jego nazwy, a pracę wykonuje to urządzenie.</string>
     <string name="nm_reach_the_provider">dostawca</string>
@@ -1135,7 +1145,6 @@
     <string name="nm_cloud_provider_no_delete">Ten dostawca to Twoje konto nanoMuse Cloud. Wyłącz je powyżej, aby nie używać jego modeli; aby się wylogować, otwórz Ustawienia › nanoMuse Cloud.</string>
     <string name="nm_welcome_own_key">Użyj własnego klucza API</string>
     <string name="nm_useit_title">Do czego go użyć</string>
-    <string name="nm_useit_body">Wybierz, czym ma się zajmować ten klucz. Resztą nadal zajmuje się nanoMuse Cloud.</string>
     <string name="nm_useit_body_signed_out">Wybierz, czym ma się zajmować ten klucz.</string>
     <string name="nm_useit_use">Użyj</string>
     <string name="nm_useit_not_now">Nie teraz</string>
@@ -1175,4 +1184,34 @@
     <string name="nm_font_scale_medium">Średni</string>
     <string name="nm_font_scale_large">Duży</string>
     <string name="nm_font_scale_extra_large">Bardzo duży</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">Pliki w czatach</string>
+    <string name="nm_backup_chat_files_on">Każdy załącznik, plik odciążenia i plik obszaru roboczego wędruje razem z wiadomościami.</string>
+    <string name="nm_backup_chat_files_off">Tylko wiadomości. Pliki są wymienione, ale nie zabierane; przywracanie zwraca czaty bez nich. Paczka pozostaje mała dla serwera, który odrzuca duże przesyłki.</string>
+    <string name="nm_backup_hint_too_large">Serwer odrzucił paczkę z powodu rozmiaru. Najczęściej to jego limit przesyłania (nginx: client_max_body_size); zwiększ go albo zrób kopię czatów bez plików.</string>
+    <string name="nm_backup_delivery_failed">Dostarczenie nie powiodło się.</string>
+    <string name="nm_backup_run_needs_passphrase">Szyfrowanie jest włączone, a hasło wpisuje się na stronie kopii zapasowej; uruchomienie z powłoki nie może o nie zapytać. Rozpocznij kopię na stronie albo wyłącz tam szyfrowanie.</string>
+    <string name="nm_backup_run_started">Kopia zapasowa uruchomiona z powłoki.</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">Model jest zajęty, na razie %1$d s</string>
+    <string name="nm_wait_queued">Przed Tobą: %1$d, na razie %2$d s</string>
+    <string name="nm_wait_next">Jesteś następny, na razie %1$d s</string>
+    <string name="nm_fb_up">Dobra odpowiedź</string>
+    <string name="nm_fb_down">Zła odpowiedź</string>
+    <string name="nm_fb_why">Co było nie tak?</string>
+    <string name="nm_fb_reason_wrong">Błędna</string>
+    <string name="nm_fb_reason_unhelpful">Nie pomogła</string>
+    <string name="nm_fb_reason_unsafe">Nie powinien był tego robić</string>
+    <string name="nm_fb_reason_slow">Za wolno</string>
+    <string name="nm_fb_reason_other">Coś innego</string>
+    <string name="nm_fb_skip">Pomiń</string>
+    <string name="nm_fb_thanks">Zapisane, dziękuję</string>
+    <string name="nm_stop_why">Dlaczego to zatrzymano?</string>
+    <string name="nm_stop_reason_wrong">Szło w złą stronę</string>
+    <string name="nm_stop_reason_slow">Za wolno</string>
+    <string name="nm_stop_reason_changed_mind">Zmieniłem zdanie</string>
+    <string name="nm_stop_reason_done">Było już gotowe</string>
+    <string name="nm_stop_reason_other">Coś innego</string>
 </resources>

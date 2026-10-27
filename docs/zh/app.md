@@ -52,6 +52,8 @@ nanomuse serve --port 9000 --no-qr
 
 **聊天。** 一个主要聊天，加上旁聊（左上角的圆形「对话」按钮打开列出它们的抽屉）。消息一边生成一边流进来。工具调用显示成小标签：点一下看参数和输出。智能体写的文件显示成构件卡片，在应用里就能打开。哨兵（Sentinel）需要你拿主意时出现一张审批卡片；智能体需要信息时出现一张提问卡片。智能体干活时输入框一直开着；你这时发的任何东西都会在下一次调用模型之前并进正在进行的这一轮。
 
+*赞和踩，停下来问一句。* 最新一条回复完成后，下面有一个赞和一个踩。点踩会展开一行原因（「答错了」「没帮上忙」「不该这么做」「太慢了」「其他原因」）和「跳过」；再点一次同一个按钮就收回，点过的回复在有新回复之后也会留着它的标记。刚停掉一次运行时，聊天里卡片的位置会出现一张「为什么停下来？」，可选「方向不对」「太慢了」「改主意了」「已经做完了」「其他原因」和「跳过」；选了、跳过了，或者过了一分半没理它，就自己消失。两者都调用你运行时上的 `POST /api/threads/{id}/feedback`：标记记在那条回复上；运行时登录了 nanoMuse Cloud 的话，再把这个代号和它属于哪一轮告诉账号的记录，对话里的文字一个字都不会发。
+
 *附件。* 「+」按钮（或者粘贴）可以附上照片和文件，每条消息最多十个，每个 25 MB（`server.max_upload_mb`），来源是相机、相册或者手机里的文件。选中就开始上传，显示成缩略图和可以去掉的小标签，一条消息也可以只有附件。每个文件都落到工作区的 `attachments/<date>/` 下（所以资源库里有它，任何工具都能用它），消息里会给智能体列出这些文件和它们是什么。模型接得住的时候，图片以图像形式发给模型：`llm.vision = auto` 会发，如果端点拒绝（DeepSeek 和大多数纯文本模型都会拒绝），从那以后就只发文字，并告诉你一次（图片仍然作为文件留着，智能体知道它的文件名，会说自己看不见它，而不是瞎猜）；`off` 从不发图片，`on` 坚持发。手机照片在编码前会缩到 1568 px，所以一张 10 MB 的照片花的钱和一张小图一样。PDF、电子表格和文档智能体用 `files` 读；PDF 的文字按页提取（扫描版 PDF 会说它没有文字层）。在聊天里，点图片或文件小标签就能打开。
 
 *浏览器视图。* 智能体用浏览器工具时，会出现一张浏览器卡片，显示它正在看的东西：每做一个动作之后页面的一张图、页面标题、它在哪儿、刚做了什么（「打开了 example.com」「点击了『Sign in』」）。运行期间卡片是 LIVE 的，之后留在聊天里。点一下看完整视图；「接管」把控制权交到你手上（点图片就在那个位置点击，往聚焦的输入框里打字，按回车，打开一个 URL），「交还」把页面还给智能体，它会被告知你做了什么，然后从那里接着干。登录就是这么发生的：智能体停在表单那儿问你，你登录，它继续。你输入的密码直接去网站，从不经过模型。画面帧只在当前会话期间留在服务器内存里（每个聊天最近十几帧）；重启之后旧卡片显示一个占位图。需要浏览器工具（`pip install "nanomuse[browser]" && playwright install chromium`，或者 `-browser` 的 Docker 镜像），或者 Android 应用：只要它连着，它自己的 WebView 就是智能体的浏览器（卡片会说明是哪一种：`backend`）。在应用里，这种卡片上的「接管」滑上来的是真实页面的一层弹出面板，而不是页面的一张图；用手机的键盘和自动填充登录，点**完成**，智能体接着干。完整的故事，包括哪些东西没法在 WebView 里登录：[browser.md](browser.md)。
@@ -70,6 +72,8 @@ nanomuse serve --port 9000 --no-qr
 
 **提醒和例程。** 在聊天里说一句（「六点提醒我给妈妈打电话」「每个工作日 07:30 给我一句话的天气」），或者在*日程*下面加一条。*提醒*是在你说的时间、在你设它的那个聊天里发一条短消息，别的什么都不做；*例程*是智能体在那个时间用它的工具做一件事（读收件箱、看一个页面、跑一个脚本），然后汇报。节奏用的是跟进那套写法：`daily 08:00`、`weekdays 07:30`、`weekly mon 09:00`、`monthly 1 09:00`。你说定的时间不受主动性档位和免打扰时段影响；聊天正忙时消息排在对话后面，不会被跳过。已触发的条目在*最近完成*下面留一周。终端里有同一张列表：`nanomuse reminders list | add | cancel`。
 
+提醒、例程、目标推进、跟进和触发事件在进入聊天队列之前，先写进运行时磁盘上的一个小发件箱（数据目录里的 `scheduled-deliveries.db`），这一轮结束时才标记为已触发，不论它是跑完了、失败了还是被停掉。进程没来得及跑完的一轮（崩溃，或者排队、进行中时重启）会在下次启动时重新排入一次；已经跑过的那一次不会再排第二遍。所以一条例程被打断的那一轮会再跑一遍；会往别处写东西的例程，重做之前应先看看那件事是不是已经做过了。电脑关机或睡眠期间错过的时间点只补一次，不是每个都补：一条每日例程晚了三天，醒来后跑一次，然后从下一个时间点接着来。排定的一轮从不插进正在进行的对话，而是等着，作为单独的一轮来跑。
+
 <a id="triggers"></a>**触发器：当某事发生时。** 提醒的另一半：由外界而不是时钟启动的工作。在聊天里说一句（「房东回信了就帮我总结一下，起草一封回复」「标题里带 *review* 的会议开始前半小时，整理一页简报」「我的部署脚本调用你的时候，检查一下网站是不是正常」），或者在*日程 → 当某事发生时*下面加一条。四种：**新邮件**（到了一封发件人或主题包含你给的每一个词的邮件；只要有这样的触发器存在，收件箱每五分钟看一次，连接邮箱从不回放旧邮件），**日程开始前**（标题或地点匹配的日历事件还有 *N* 分钟开始），**webhook**（一个带 key 的 URL；任何能发 HTTP 请求的东西（CI 任务、家庭自动化规则、带 `curl` 的 cron 行）向它 `POST`，请求体就是上下文），**设备上线**（账号的某台设备上线，它的名称或类型包含你给的每一个词；这台电脑不会宣告自己，App 启动时已经在线的设备也不算一次上线）。每次触发，智能体都在设它的那个聊天里做事，面前摆着那封邮件、那个事件、那次上线或那个请求，结果以「新邮件：…」「即将开始：…」「Webhook：…」或「设备上线：…」的形式落到动态里。同一件事从不触发两次（邮件按 UID、事件按开始时间），webhook 拒绝间隔不到十秒的投递，错的 key 看起来和错的 URL 一模一样。邮件、事件和谁在线是你的私人数据：从那以后这段对话就带上污点标记，再往不在白名单里的主机发任何东西都需要一次审批，模型也被告知，把收到的东西当数据，绝不当指令。「现在运行」用一个样例事件触发一次，看看它会做什么；列表显示每条触发过几次、收件箱上次什么时候读的。终端里：`nanomuse triggers list | add | cancel`。
 
 **资源库。** 智能体工作区里的每一个文件，最新的在前，可以按类型筛（页面、文档、图片、数据、代码），可以搜索。文件在应用里就能打开：页面实时渲染，Markdown 排好版，CSV 变成表格，图片和 PDF 内嵌显示。智能体写的页面跑在一个沙箱化的、来源不透明（opaque origin）的 iframe 里（它读不到访问令牌，也调不了 API）；出于同样的原因，服务器给每个 HTML 文件都带上 `Content-Security-Policy: sandbox`。
@@ -79,10 +83,35 @@ nanomuse serve --port 9000 --no-qr
 - *审批*：所有聊天里等着你的卡片队列，当场就能回答。有待处理的时候先打开它。
 - *活动*：审计记录，每一次工具调用、判定和审批，包括被拒绝的。
 - *权限*：哨兵模式，以及你授予的每一条长期权限，每条都带一个撤销按钮。
-- *日程*：后台工作的开关、下一轮的时间、排队的目标和一个「现在运行」按钮、接下来的跟进、你的提醒和例程、你的触发器（*当某事发生时*），各自带「+ 添加」「现在运行」和取消；webhook 有一个复制 URL 的按钮。
+- *日程*：后台工作的开关、下一轮的时间、排队的目标和一个「现在运行」按钮、接下来的跟进、你的提醒和例程、你的触发器（*当某事发生时*），各自带「+ 添加」「现在运行」和取消；webhook 有一个复制 URL 的按钮，密钥只在这里出现（设置它的那段对话只说地址和请求头，不说密钥）。
 - *记忆*：智能体记住的关于你的一切，按类别分，加一个输入框。「忘掉」删除一条；智能体不会再看到它，这次删除会连同被删掉的那一行列在*最近的改动*里。每一轮对话，和消息相关的记忆会进入智能体的提示词：按关键词，以及（在*连接 → 按含义召回*下面设好向量（embedding）端点之后）按含义，所以「写邮件给房东」能带出「the landlord is Bob Li」，哪怕它们一个词都不重合。「整理」跑一遍智能体自己也会做的整理工作（每新增八行，或每周一次，除「关闭」外的任何主动性档位都做）：说同一件事的几行合成一行，变了的事实留新版本，从来不是关于你的事实的一次性请求被丢掉。模型提议；nanoMuse 检查合并后的那一行没有多出原本没有的词，拒绝丢掉任何你亲手写的，每遍最多拿掉存量的五分之一。*最近的改动*列出每一次合并、丢弃、更新和遗忘，以及此前的内容，每条都有「撤销」。改动了东西的一次整理，在动态里是一条。
 - *技能*：一件事怎么做，写下来一次（每周回顾、旅行计划、收件箱分拣）。见下面的[技能](#skills)。
-- *连接*：智能体够得着什么，在手机上就能接上和拔掉。**模型**：服务商预设（阿里云百炼、OpenRouter、DeepSeek、OpenAI、Ollama、任何 OpenAI 兼容端点）、模型名、工具调用模式和 API key。每家服务商覆盖什么、ChatGPT 登录怎么回事，在 [web.md](web.md)；key 以 `LLM_API_KEY` 写进保险库，并当场换到每一个会话里；「测试」让模型回一个词。用 nanoMuse Cloud 账号时，聊天模型是 `deepseek-v4.1-flash`。**手的模型**、**生成图片**、**生成视频**：手机和桌面版在 设置 → 模型 里的另外三行，这里是聊天模型下面的几张卡片；每张打开时都是「自动」（对话模型所在的服务商能做这件事就用它，否则登录时用账号的模型），并写着「当前为 服务商 · 模型」。手把浏览器和电脑的截图发给一个看得见图像的模型：Cloud 上是 `qwen3.8-27b`；DeepSeek 家的，只有 id 带 `v4.1`、`vision` 或 `ocr` 的才行。**按含义召回**：记忆是否也按含义召回，走一个 OpenAI 兼容的 `/embeddings` 端点：*自动*（模型的端点有就用，没有就按关键词召回）、*开*、*关*；用模型自己的端点或者另一个（比如 DeepSeek 旁边放一个带 `qwen3-embedding:0.6b` 的 Ollama，因为 DeepSeek 没有向量端点；key 以 `EMBEDDINGS_API_KEY` 进保险库）；向量模型名，留空用端点的默认值。「测试」调一次向量接口，成功了就当场把每一条记忆建好索引；卡片上那一行写着已索引多少条。**网页搜索**：谁来回答 `web_search`：DuckDuckGo（不用设置，但是抓取来的，偶尔会被限流）、带 key 的 Brave Search、Tavily 或 Serply（保险库：`SEARCH_API_KEY`，附一个申请 key 的链接）、有没有 key 都行的 You.com（不带 key 每天 100 次），或者按 URL 填一个 SearXNG 实例；「测试」跑一次搜索，显示服务商、结果数和耗时。不管选的是谁，搜索失败都会退回 DuckDuckGo 并加一句说明。**邮件**：常见服务商的预设、地址和应用专用密码（保险库：`EMAIL_ADDRESS`、`EMAIL_PASSWORD`）、IMAP/SMTP 服务器；「连接」保存并登录两台服务器证明能用；「断开」删掉凭据和对应的工具。**日历**：加任何私密 `.ics` 链接（页面上写着 Google、Outlook、iCloud 和 Fastmail 各自把它藏在哪儿）或者一个文件路径；链接以 `CALENDAR_<NAME>` 进保险库，日历源当场读取并显示事件数；*空闲时间*用的工作时间；「重新读取」把每个源再抓一遍。今天的事件出现在动态的*今天*下面（今天过完就显示明天的），智能体的提示词里也能看到。智能体起草的事件打开是一张卡片，带「加入日历」。**通讯录**：上传从手机导出的 `.vcf`（Google 通讯录、iCloud、Outlook、手机自带的通讯录应用；页面上写着每家把导出藏在哪儿），或者给一个路径或链接（链接以 `CONTACTS_<NAME>` 进保险库）；每本通讯录显示有多少人；*我的联系人*是智能体从聊天里填起来的那一本；一个搜索框，按智能体查人的方式查人。**浏览器**：开 / 关，Playwright 没装时带安装提示。**MCP 服务器**：按命令（stdio）或 URL 添加一个服务器，选它的工具的风险等级，再移除；`config.toml` 里的服务器只读列出。**保险库**：每一个已存密钥的名字，添加或删除一个。离开服务器的永远只有名字。
+- *连接*：智能体够得着什么，在手机上就能接上和拔掉。
+  **模型**：服务商预设（阿里云百炼、OpenRouter、DeepSeek、OpenAI、Ollama、任何 OpenAI
+  兼容端点）、模型名、工具调用模式和 API key。每家服务商覆盖什么、ChatGPT 登录怎么回事，
+  在 [web.md](web.md)；key 以 `LLM_API_KEY` 写进保险库，并当场换到每一个会话里；「测试」让
+  模型回一个词。项目托管 nanoMuse Cloud 用 `Qwen/Qwen3.6-27B-FP8` 负责对话、附带图片输入和
+  操作屏幕。**手的模型**、**生成图片**、**生成视频**是手机和桌面版在「设置 → 模型」里的另外
+  三行，这里显示为聊天模型下方的卡片。「自动」先看对话服务商能不能做，再看已登录中继的实际
+  菜单是否提供这项能力，最后看你的其他服务商。项目托管 Cloud 因此会出现在操作屏幕，但不会
+  出现在媒体生成：图片和视频必须用你自己的服务商和 API key。每张卡写着「当前为 服务商 ·
+  模型」。DeepSeek 家只有 id 带 `v4.1`、`vision` 或 `ocr` 的才算能看图。
+  **按含义召回**：通过 OpenAI 兼容的 `/embeddings` 端点按含义找记忆，可选「自动」「开」「关」；
+  可以用模型自己的端点或另一个端点（例如给没有向量接口的 DeepSeek 配一个带
+  `qwen3-embedding:0.6b` 的 Ollama；保险库：`EMBEDDINGS_API_KEY`），模型名留空用端点默认值。
+  「测试」成功后会当场索引每一条记忆，卡片显示数量。
+  **网页搜索**：DuckDuckGo、带 key 的 Brave Search / Tavily / Serply、带或不带 key 的 You.com
+  和 Parallel（Parallel 不带 key 免费，限额较低），或按 URL 填 SearXNG；保险库名是 `SEARCH_API_KEY`。「测试」显示服务商、结果数和耗时，失败会
+  带说明退回 DuckDuckGo。
+  **邮件**：常见服务商预设、地址和应用专用密码（`EMAIL_ADDRESS`、`EMAIL_PASSWORD`）以及
+  IMAP/SMTP 服务器；「连接」验证两边，「断开」删除凭据和工具。
+  **日历**：私密 `.ics` 链接或文件、工作时间和「重新读取」；链接以 `CALENDAR_<NAME>` 进保险库，
+  今天的事件进入动态，智能体起草的事件有「加入日历」卡片。
+  **通讯录**：`.vcf` 上传、路径或链接（`CONTACTS_<NAME>`）、人数和搜索；「我的联系人」由智能体
+  从聊天中填写。
+  **浏览器**：开 / 关，缺 Playwright 时显示安装提示。
+  **MCP 服务器**：按 stdio 命令或 URL 添加、设置工具风险、移除；`config.toml` 里的条目只读。
+  **保险库**：添加或删除已存密钥的名字。离开服务器的永远只有名字。
 - *设置*：智能体的名字、形象、颜色和性格，它怎么称呼你；哨兵模式（平衡 = `ask`，谨慎 = `strict`，放手 = `auto`）以及命令是否在[沙箱](sentinel.md#the-sandbox)里跑；主动性（关闭 / 低 / 默认 / 高的档位、跟进间隔、免打扰时段；见[后台工作](#background-work)）；通知（见下文）；在 Android 应用上还有「保持运行」：电池、悬浮窗和闹钟权限、重启后自动启动、导出日志（[archive/android-python-line.md](../archive/android-python-line.md#keeping-it-running)）；「显示思考过程」；应用语言；回复语言；以及始终都在的两行版本信息：已安装的版本和最新的发布（「最新版 0.1.x，你已经在用了」/「0.1.x 已发布 · 更新」/「没能检查到最新版本 · 现在检查」；先查 `nanomuse.cn/dl/index.json`，再查 GitHub）。
 
 应用会说 English 和简体中文。*设置 → 应用语言*是设备级的设置（存在浏览器里，不在服务器上）：*自动*跟着浏览器的语言走，不然就自己选一个；日期和相对时间也跟着它。它和*回复语言*是两回事，后者是智能体用什么语言写。字符串放在 `web/src/i18n/`：英文原文就是 key，`zh-CN.ts` 是译文，应用里有哪条字符串没有译文，单元测试就会失败。
@@ -138,6 +167,7 @@ nanomuse serve --port 9000 --no-qr
 | GET | `/api/threads/{id}/events?limit=&before=` | 时间线事件 |
 | POST | `/api/threads/{id}/send` `{text, files?, language?, via?}` | 把一条消息排进队列；立即返回。`files`：下面那个上传接口返回的工作区路径，最多十个；有文件时文字可以为空。`language`（1.0.0 起）：客户端界面语言的 BCP-47 标签（`en`、`zh-CN`）；除非「回复语言」固定了一种，回复就用这种语言写。不带它时照旧按消息的文字书写系统判断。`via: "cloud"` 是「这次改用 nanoMuse Cloud」：这一个回合用账号的 key 在账号推荐的聊天模型上跑，下一回合回到配置的模型，`[llm]` 不动；用户气泡、回复和这一回合的失败提示都带 `model_used`。没有登录账号时回 `401 signed_out` |
 | POST | `/api/threads/{id}/stop` | 停掉那个聊天里正在跑的一轮：队列丢弃，那里待处理的审批和提问卡片过期，对话照常能用。没有东西在跑时返回 `{ok: false}` |
+| POST | `/api/threads/{id}/feedback` `{event, vote, reason?}` 或 `{stop_reason}` | 最轻的反馈。给一条回复点赞或点踩：`event` 是那条 assistant 事件的 id，`vote` 是 `up`、`down`，或 `""` 收回；人说了原因时 `reason` 是 `wrong`、`unhelpful`、`unsafe`、`slow`、`other` 之一；事件会被加上 `feedback` 字段并返回。或者说明为什么按了停止：`stop_reason` 是 `wrong`、`slow`、`changed_mind`、`done`、`other`、`skipped` 之一（提问被关掉时客户端发 `skipped`）。这些跟着对话保存；登录了 nanoMuse Cloud 账号时，还会作为 `turn.feedback` 或 `turn.stopped` 客户端事件发到账号的记录里，挂在这条回复所属的那一轮上（assistant 事件里的 `turn` 和 `turn_source`），从不带回复的文字（[cloud.md](cloud.md#client-events)）。`event` 不是一条回复时 404，词不在列表里时 400 |
 | POST | `/api/files/upload?name=` （请求体：文件字节） | 一个要附上的文件：落到 `attachments/<date>/` 下，文件名是 `name` 的安全版本；返回给 `files` 用的 `{path, name, size, kind, mime}`。超过 `server.max_upload_mb` 返回 413 |
 | POST | `/api/approvals/{id}` `{approved, scope, reason}` | 回答一张卡片；`scope` 是这张卡片 `grant_options` 中的一个（`once`、`conversation`、`session`、`24h`、`always`；`task` 仍按 `conversation` 读） |
 | DELETE | `/api/approvals` | 忘掉所有已授予的权限 |
@@ -178,7 +208,7 @@ nanomuse serve --port 9000 --no-qr
 | POST | `/api/connections/endpoints/{id}/models` | 重新向接口要一遍模型并保存：返回条目加 `source: "live"`，它没回答时是 `"kept"` 和 `error`，沿用已保存的列表 |
 | PUT | `/api/connections/embeddings` `{mode, model, base_url, api_key}` | 按含义召回：`mode` 为 auto/on/off；`base_url` 为 `""` → 用模型的端点；`model` 为 `""` → 用端点的默认值；`api_key` 给了 → 保险库（`EMBEDDINGS_API_KEY`），`""` → 用模型的 key，没给 → 不变。当场重建向量模型 |
 | POST | `/api/connections/embeddings/test` | 调一次向量接口，然后给每条记忆建索引：`{ok, model, dims, indexed, ms}` 或 `{ok: false, error}` |
-| PUT | `/api/connections/search` `{provider, api_key, base_url}` | 网页搜索：`provider` 为 duckduckgo/brave/tavily/serply/you/searxng；`api_key` 给了 → 保险库（`SEARCH_API_KEY`），`""` 删掉它，没给 → 不变；`base_url` 是 SearXNG 实例。从下一次搜索起生效 |
+| PUT | `/api/connections/search` `{provider, api_key, base_url}` | 网页搜索：`provider` 为 duckduckgo/brave/tavily/serply/you/parallel/searxng；`api_key` 给了 → 保险库（`SEARCH_API_KEY`），`""` 删掉它，没给 → 不变；`base_url` 是 SearXNG 实例。从下一次搜索起生效 |
 | POST | `/api/connections/search/test` | 对配置的服务商搜一次，不回退：`{ok, provider, results, first, ms}` 或 `{ok: false, error}` |
 | PUT / DELETE | `/api/connections/email` | 保存 `{address, password, imap_host, imap_port, smtp_host, smtp_port, smtp_starttls, enabled}`（地址和密码进保险库）/ 断开并忘掉凭据 |
 | POST | `/api/connections/email/test` | 登录 IMAP 和 SMTP：`{ok, inbox}` 或 `{ok: false, error}` |
@@ -192,7 +222,7 @@ nanomuse serve --port 9000 --no-qr
 | POST | `/api/connections/contacts/test` | 把每本通讯录重读一遍：`{ok, contacts, sources}` 或 `{ok: false, error}` |
 | GET | `/api/contacts?q=&limit=` | 按智能体的方式查人：`[{id, name, emails[], phones[], org, …}]` |
 | PUT | `/api/connections/browser` `{enabled}` | 打开或关闭浏览器工具 |
-| PUT | `/api/connections/gui` `{enabled, provider, model, base_url, api_key}` | 操作手机（[gui.md](gui.md)）：这个开关立刻添加或移除手机工具；模型字段是操作器自己的模型（`""` → 用主模型的）；`api_key` 给了 → 保险库（`GUI_API_KEY`），`""` → 用主 key，没给 → 不变。用 `endpoint` 代替 `provider` / `base_url` / `api_key` 时指向列表里的一个接口，和对话模型一样；`PUT /api/connections/image` 和 `/video` 也是 |
+| PUT | `/api/connections/gui` `{enabled, provider, model, base_url, api_key}` | 操作手机（[gui.md](gui.md)）：这个开关立刻添加或移除手机工具；模型字段是操作器自己的模型（`""` → 自动：按 [configuration.md](configuration.md#the-phone-gui) 里的顺序，结果在回答的 `effective_model` 和 `effective_source` 里）；`api_key` 给了 → 保险库（`GUI_API_KEY`），`""` → 用主 key，没给 → 不变。用 `endpoint` 代替 `provider` / `base_url` / `api_key` 时指向列表里的一个接口，和对话模型一样；`PUT /api/connections/image` 和 `/video` 也是 |
 | POST | `/api/connections/gui/test` | 和操作器的模型来一次简短往返：`{ok, reply, ms}` 或 `{ok: false, error}` |
 | GET | `/api/phone` | `{connected, device{id, name, platform, gui, apps, width, height}, gui_enabled, last_screen, screen}`：哪台手机连着，以及它最后发来的屏幕 |
 | GET | `/api/hands` | 这台电脑自己的屏幕和双手（[gui.md](gui.md)）：`{enabled, available, backend, reason, mode, coords, screen_size, picture_size, window{available, reason, active, app, title, frame}, device, task_active, task_text, last_screen}`；在手机上是 `{enabled: false, available: false, reason}` |
@@ -200,7 +230,7 @@ nanomuse serve --port 9000 --no-qr
 | POST | `/api/hands/stop` | 双手卡片上的「停止」：这台电脑屏幕上的任务在下一步结束；`{stopped}` |
 | GET / POST | `/api/holds` · `{thread, tool (browser · computer · phone), reason?}` | 当前开着的接管 / 接管：智能体在那个会话里同类的动作都等到你点「完成」。返回接管事件 `{type: "hold", id, thread, tool, status, by, reason, ts}`；会话不存在回 404 |
 | POST | `/api/holds/{id}/done` | 「完成」：接管结束，等着的工具重新看一眼再继续；已经结束的原样返回。id 不存在回 404 |
-| GET / PUT | `/api/connections/image` · `/api/connections/video` `{provider, model, base_url, api_key}` 或 `{endpoint, model}` | 形象工作室的图片和短片槽位（[avatar.md](avatar.md)）：`provider` 是目录 id（或带 `base_url` 的 `openai` / `openai_responses`），`model` 留空用目录的默认，`api_key` 给了 → 保险库，`""` 删掉，没给 → 不变；四个都是 `""` 则清空槽位，图片（短片）重新来自对话模型的提供商或账号 |
+| GET / PUT | `/api/connections/image` · `/api/connections/video` `{provider, model, base_url, api_key}` 或 `{endpoint, model}` | 形象工作室的图片和短片槽位（[avatar.md](avatar.md)）：`provider` 是目录 id（或带 `base_url` 的 `openai` / `openai_responses`），`model` 留空用目录的默认，`api_key` 给了 → 保险库，`""` 删掉，没给 → 不变；四个都是 `""` 则清空槽位，自动解析依次看对话服务商、菜单明确提供这类媒体能力的已登录中继、再看其他自有服务商；项目托管 Cloud 不提供媒体生成 |
 | GET | `/api/providers?lang=&region=` | 目录，连同每个槽位用的是什么、这些一共覆盖了什么，以及没人覆盖的每项能力各一句话（`lang`：`en` · `zh`，`region`：`cn` · `global`）；「添加模型」面板就是从这里画出来的 |
 | POST · GET · GET · POST · POST | `/api/chatgpt/login` · `/status` · `/usage` · `/callback {url}` · `/logout` | [own-key.md](own-key.md#sign-in-with-a-plan-you-already-pay-for) 里的 ChatGPT 登录：开始 Codex 登录（要打开的页面）、不含令牌的令牌库状态、套餐用量窗口还剩多少、从浏览器地址栏粘贴来的回调地址（别的登录的 `state` 回 400）、忘掉这次登录 |
 | POST · DELETE | `/api/connections/mcp` `{name, command, args[], env{}, url, risk}` · `/api/connections/mcp/{name}` | 现在就连接一个服务器（起不来返回 502）/ 断开并移除一个从应用里添加的。每个 `env` 值都存进保险库，名字是 `MCP_<SERVER>_<KEY>`，设置文件里只保留 `{{vault:...}}`；本来就写成引用的值原样保留；移除服务器时这些条目一并删除。视图里每个服务器的 `env` 是 `[{name, vault}]`，从不带值 |
@@ -229,7 +259,7 @@ nanomuse serve --port 9000 --no-qr
 | GET · DELETE | `/api/cloud/sessions` · `/api/cloud/sessions/{prefix}` | 账号在各设备上的登录 / 按列表显示的前缀撤销一个；两者都回答 `{sessions}` |
 | POST | `/api/cloud/sign-out` · `/api/cloud/sign-out-all` `{all}` | 退出这台设备 / 撤销其他所有设备的登录（`all: true` 时连这台一起，`{signed_out}` 加账号视图） |
 | GET | `/api/cloud/events?limit=` | 中继上这个账号的活动记录：`{events}`；`limit` 取 1 到 200，默认 50 |
-| POST | `/api/cloud/models` `{on}` | 「使用 nanoMuse Cloud 模型」：关掉后，账号的模型退出双手、图片和短片的自动顺序以及提供方列表；登录保留。聊天模型正在用账号时返回 409 `chat_on_cloud` |
+| POST | `/api/cloud/models` `{on}` | 「使用 nanoMuse Cloud 模型」：关掉后，账号的对话和操作屏幕模型退出自动顺序以及服务商列表（自建中继若声明了媒体模型，也一并退出）；登录保留。聊天模型正在用账号时返回 409 `chat_on_cloud` |
 | POST | `/api/cloud/use-as-model` `{model?}` | 让账号当聊天模型：不点名就用推荐模型，Cloud 的 key 来自保险库；同时把账号的模型重新打开。回答连接视图里的 `llm` |
 | POST · DELETE | `/api/cloud/contribute` `{on}` · `/api/cloud/samples` | 数据控制：「帮助改进 nanoMuse 的 AI 模型」开或关（只有开着时中继才保留聊天回合）/ 删除它保留的内容，`{deleted}` |
 | POST | `/api/cloud/delete` | 在中继上删除账号并在这里退出；回答账号视图 |
@@ -251,11 +281,11 @@ nanomuse serve --port 9000 --no-qr
 
 | 服务器 → 客户端 | 含义 |
 |---|---|
-| `event` | 一条新的时间线事件（`user`、`assistant`、`tool`、`approval`、`question`、`artifact`、`browser`、`notice`）。`approval` 带 `summary`、`purpose`（你当初要的是什么）、`target`、`grant_key`、`grant_options`、`risk`、`warnings`、`args`。`browser` 卡片带 `url`、`title`、`action`、`frame`（最新一张图的 id）、`frames`、`status`（`live` / `done`）、`by_user`、`backend`（`playwright` 或 `device`）以及这帧画面以 CSS 像素计的 `width` / `height`。后台轮次里产生的事件带 `source: "background"` 和 `about`（这一轮的标签）。结束一轮的那条 `assistant` 气泡带 `final: true`（发出时就设上，或者气泡已经在屏幕上时以一条 `update` 补上）；在它之前一步一步的叙述不带；把后台结果映射成通知的客户端应该以这个标志为准 |
+| `event` | 一条新的时间线事件（`user`、`assistant`、`tool`、`approval`、`question`、`artifact`、`browser`、`notice`）。`approval` 带 `summary`、`purpose`（你当初要的是什么）、`target`、`grant_key`、`grant_options`、`risk`、`warnings`、`args`。`browser` 卡片带 `url`、`title`、`action`、`frame`（最新一张图的 id）、`frames`、`status`（`live` / `done`）、`by_user`、`backend`（`playwright` 或 `device`）以及这帧画面以 CSS 像素计的 `width` / `height`。后台轮次里产生的事件带 `source: "background"` 和 `about`（这一轮的标签）。结束一轮的那条 `assistant` 气泡带 `final: true`（发出时就设上，或者气泡已经在屏幕上时以一条 `update` 补上）；在它之前一步一步的叙述不带；把后台结果映射成通知的客户端应该以这个标志为准。`assistant` 事件还带 `turn`（运行时登录了 nanoMuse Cloud 时，账号记录里这一轮的 id），这一轮跑在自己 key 上时另带 `turn_source: "own"`；通过 `POST /api/threads/{id}/feedback` 点过赞踩后带 `feedback`（`up` / `down`） |
 | `update` | 已有事件的字段变了（一个工具跑完了、一张审批有了结果、一张浏览器卡片有了新的一帧） |
 | `event_removed` | `{thread, id}`；一条事件离开了时间线：在账号的另一台设备上删掉了一条消息（对话同步） |
-| `working` | `{thread, cid, device, device_name, working, at}`：账号的另一台设备在一段同步的对话里开始（`true`）或结束（`false`）了一轮；为 `true` 期间应用在最后一条消息下面显示「{device} 正在处理…」，回复到了或者十分钟后撤掉。`hello` 的状态在 `working` 下列出正在进行的那些 |
-| `stream_start` / `delta` / `stream_end` | 正在生成的助手回复；流出来的内容最后发现不是回复时（提示词模式的工具调用、安静的后台轮次），`stream_end` 带 `discard: true` |
+| `working` | `{thread, cid, device, device_name, working, at, state?, detail?}`：账号的另一台设备在一段同步的对话里开始（`true`）或结束（`false`）了一轮；为 `true` 期间应用在最后一条消息下面显示「{device} 正在处理…」（带着那两个字段时，中继 0.31，是「{device} 正在处理：{detail}」或「{device} 在等你确认」），回复到了或者十分钟后撤掉。`hello` 的状态在 `working` 下列出正在进行的那些 |
+| `stream_start` / `delta` / `reasoning_delta` / `stream_end` | 正在生成的助手回复；`reasoning_delta` 是模型边想边流出来的推理，只在开着 `show_thinking` 时发送，本身不保存（最后的 `assistant` 事件带着完整的推理）；流出来的内容最后发现不是回复时（提示词模式的工具调用、安静的后台轮次），`stream_end` 带 `discard: true` |
 | `status` | idle / working / waiting，附一行简短说明 |
 | `thread`、`thread_cleared`、`thread_deleted` | 会话列表的变化 |
 | `firstrun` | `{firstrun}`；第一次对话往前走了一步（「开始」、模型的 `nanomuse-naming` 代码块、选了名字、撤掉卡片）：和 `GET /api/firstrun` 同样的视图，不带 `intro`；聊天据此重画起名卡片。`hello` 的状态在 `firstrun` 下带着它 |
@@ -274,7 +304,7 @@ nanomuse serve --port 9000 --no-qr
 ```bash
 cd web && npm install
 npm run dev          # Vite on http://localhost:5173, proxied to the server on 8787
-npm run build        # writes nanomuse/server/static/ — commit the result
+npm run build        # writes nanomuse/server/static/; commit the result
 ```
 
 用开发服务器期间，在 `[server]` 里加上 `cors_origins = ["http://localhost:5173"]`。应用就是普通的 React + TypeScript + Tailwind，没有状态管理库；`web/src/store.tsx` 放着 reducer 和 WebSocket 客户端，`web/src/screens/` 每个标签页一个文件。

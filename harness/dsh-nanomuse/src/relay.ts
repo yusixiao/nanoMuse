@@ -94,6 +94,20 @@ export interface DataControls {
   /** How the relay starts new accounts; undefined when it did not say. */
   defaultOn?: boolean
   privacyUrl: string
+  /** The record (relay 0.29): whether this relay keeps one and what it holds of the account; absent on an older relay. */
+  record?: RecordView
+}
+
+/** `GET /v1/me` → `contribute.record`: the account's record in figures. */
+export interface RecordView {
+  on: boolean
+  turns: number
+  /** Turns the account's apps ran on keys of their own and sent up (1.0.7 on). */
+  own: number
+  files: number
+  mediaBytes: number
+  /** 0: kept until the person deletes it. */
+  keepDays: number
 }
 
 /** One model the account may use, as `GET /v1/models` lists it. */
@@ -103,6 +117,8 @@ export interface RelayModel {
   /** `chat`, `image`, `video` — only `chat` models join the model picker. */
   kind: string
   recommended: boolean
+  /** The lanes this model is the relay's first choice for. */
+  recommendedFor?: string[]
   inputModalities: string[]
   /** What the relay says it is for (relay 0.1.34+): `chat`, `gui`, or both; absent on an older relay. */
   for?: string[]
@@ -138,6 +154,15 @@ export interface ProfileWrite {
   connectors?: SharedConnector[]
   /** Which device's rows `connectors` replaces. */
   device_id?: string
+  /** The drawn face's clips as files this account put up (relay 0.29); `null` clears them. Absent keeps what is stored. */
+  clips?: Record<string, ProfileClip> | null
+}
+
+/** One clip of the drawn face in the account's profile: a file at `GET /v1/blobs/{sha256}`. */
+export interface ProfileClip {
+  sha256: string
+  mime: string
+  bytes: number
 }
 
 /** What a few pictures would cost next to what is left today (`GET /v1/estimate`). */
@@ -177,6 +202,8 @@ export interface RelayProfile {
   face?: Record<string, string>
   /** The account's connections across devices, as the relay lists them (relay 0.1.34+). */
   connectors: SharedConnector[]
+  /** The face's clips another device made (relay 0.29), by mood; absent when there are none. */
+  clips?: Record<string, ProfileClip>
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -194,15 +221,38 @@ async function fail(res: Response): Promise<never> {
   throw new RelayError(res.status, code, message)
 }
 
+/** `{mood: {sha256, mime, bytes}}` as the relay sends it; entries that are not a hex SHA-256 are left out. */
+export function readProfileClips(raw: unknown): Record<string, ProfileClip> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const out: Record<string, ProfileClip> = {}
+  for (const [mood, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== 'object') continue
+    const c = v as Record<string, unknown>
+    const sha256 = String(c.sha256 ?? '').toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(sha256)) continue
+    out[mood] = { sha256, mime: String(c.mime ?? ''), bytes: typeof c.bytes === 'number' ? c.bytes : 0 }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 function toDataControls(ct: unknown): DataControls | undefined {
   if (!ct || typeof ct !== 'object') return undefined
   const c = ct as Record<string, unknown>
+  const record = toRecordView(c.record)
   return {
     on: Boolean(c.on),
     samples: Number(c.samples ?? 0),
     ...(typeof c.default_on === 'boolean' ? { defaultOn: c.default_on } : {}),
     privacyUrl: String(c.privacy_url ?? ''),
+    ...(record ? { record } : {}),
   }
+}
+
+function toRecordView(raw: unknown): RecordView | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return { on: Boolean(r.on), turns: num(r.turns), own: num(r.own), files: num(r.files), mediaBytes: num(r.media_bytes), keepDays: num(r.keep_days) }
 }
 
 function toSpend(raw: unknown): Spend | undefined {
@@ -327,6 +377,22 @@ export class Relay {
       method: 'PUT',
       headers: { ...this.auth(apiKey), ...JSON_HEADERS },
       body: JSON.stringify({ ...body, device: device.slice(0, 80) }),
+      signal: signal ?? null,
+    })
+    if (!res.ok) await fail(res)
+    const out = (await res.json().catch(() => ({}))) as { rev?: number }
+    return Number(out.rev ?? 0)
+  }
+
+  /**
+   * Name the face's clips in the account's profile alone (`PUT /v1/me/profile` with only `clips`,
+   * relay 0.29): the look stays as it is; the other devices download these instead of drawing.
+   */
+  async putProfileClips(apiKey: string, clips: Record<string, ProfileClip>, device: string, signal?: AbortSignal): Promise<number> {
+    const res = await this.fetchImpl(`${this.origin}/v1/me/profile`, {
+      method: 'PUT',
+      headers: { ...this.auth(apiKey), ...JSON_HEADERS },
+      body: JSON.stringify({ clips, device: device.slice(0, 80) }),
       signal: signal ?? null,
     })
     if (!res.ok) await fail(res)
@@ -489,6 +555,7 @@ export class Relay {
         name: String(m.name ?? m.id ?? ''),
         kind: String(extra.kind ?? 'chat'),
         recommended: Boolean(extra.recommended),
+        ...(Array.isArray(extra.recommended_for) ? { recommendedFor: extra.recommended_for.map(String) } : {}),
         inputModalities: Array.isArray(arch.input_modalities) ? arch.input_modalities.map(String) : ['text'],
         ...(Array.isArray(extra.for) ? { for: extra.for.map(String) } : {}),
       }
@@ -512,6 +579,7 @@ export class Relay {
     if (!res.ok) await fail(res)
     const body = (await res.json()) as Record<string, unknown>
     const face = body.face && typeof body.face === 'object' ? (body.face as Record<string, unknown>) : undefined
+    const clips = readProfileClips(body.clips)
     return {
       rev: Number(body.rev ?? 0),
       device: String(body.device ?? ''),
@@ -525,7 +593,15 @@ export class Relay {
       faceId: String(body.face_id ?? ''),
       connectors: readSharedConnectors(body.connectors),
       ...(face ? { face: Object.fromEntries(Object.entries(face).filter(([, v]) => typeof v === 'string')) as Record<string, string> } : {}),
+      ...(clips ? { clips } : {}),
     }
+  }
+
+  /** `GET /v1/blobs/{sha256}`: a file of the account's (a clip of the face, a picture of a turn), with its type. */
+  async getBlob(apiKey: string, sha256: string, signal?: AbortSignal): Promise<{ data: Uint8Array; mime: string }> {
+    const res = await this.fetchImpl(`${this.origin}/v1/blobs/${encodeURIComponent(sha256)}`, { headers: this.auth(apiKey), signal: signal ?? null, timeoutMs: RELAY_IMAGE_TIMEOUT_MS })
+    if (!res.ok) await fail(res)
+    return { data: new Uint8Array(await res.arrayBuffer()), mime: (res.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '' }
   }
 
   /**
@@ -544,7 +620,10 @@ export class Relay {
     return toDataControls(await res.json()) ?? { on, samples: 0, privacyUrl: '' }
   }
 
-  /** Delete every turn the relay kept from the account; how many went. */
+  /**
+   * Delete every turn the relay kept from the account (the training turns, and from relay 0.29
+   * the record with its files); how many training turns went.
+   */
   async deleteSamples(apiKey: string, signal?: AbortSignal): Promise<number> {
     const res = await this.fetchImpl(`${this.origin}/v1/me/samples`, {
       method: 'DELETE',
@@ -564,6 +643,64 @@ export class Relay {
       signal: signal ?? null,
     })
     if (!res.ok && res.status !== 401) await fail(res)
+  }
+
+  /** `HEAD /v1/blobs/{sha256}`: whether the account can already read the file (so a device need not send what another one did). */
+  async hasBlob(apiKey: string, sha256: string, signal?: AbortSignal): Promise<boolean> {
+    const res = await this.fetchImpl(`${this.origin}/v1/blobs/${encodeURIComponent(sha256)}`, { method: 'HEAD', headers: this.auth(apiKey), signal: signal ?? null })
+    if (res.ok) return true
+    if (res.status === 404) return false
+    return fail(res)
+  }
+
+  /** `PUT /v1/blobs/{sha256}`: a picture, audio clip or video, raw, named by its hash (the relay checks it). */
+  async putBlob(apiKey: string, sha256: string, mime: string, data: Uint8Array, signal?: AbortSignal): Promise<void> {
+    const res = await this.fetchImpl(`${this.origin}/v1/blobs/${encodeURIComponent(sha256)}`, {
+      method: 'PUT',
+      headers: { ...this.auth(apiKey), 'content-type': mime || 'application/octet-stream' },
+      body: data as BodyInit,
+      signal: signal ?? null,
+      timeoutMs: RELAY_IMAGE_TIMEOUT_MS,
+    })
+    if (!res.ok) await fail(res)
+  }
+
+  /**
+   * `POST /v1/turns` (relay 0.29): a turn this computer ran on a key of its own, in the shape
+   * the relay keeps; `device` rides as `X-NanoMuse-Device` and the platform as
+   * `X-NanoMuse-Platform` (relay 0.31: Node's user agent says nothing of it). A relay that
+   * keeps no record answers 404, which the caller treats as "not now".
+   */
+  async postTurn(apiKey: string, turn: Record<string, unknown>, device: string, signal?: AbortSignal): Promise<void> {
+    const res = await this.fetchImpl(`${this.origin}/v1/turns`, {
+      method: 'POST',
+      headers: { ...this.auth(apiKey), ...JSON_HEADERS, ...this.where(device) },
+      body: JSON.stringify(turn),
+      signal: signal ?? null,
+    })
+    if (!res.ok) await fail(res)
+  }
+
+  /**
+   * `POST /v1/events` (relay 0.31): what happened around turns, as codes and numbers
+   * (docs/cloud.md "Client events"); at most 100 a request. The relay answers 202 with what
+   * it kept and dropped; a 429 says the account sent too many requests this minute.
+   */
+  async postEvents(apiKey: string, events: Record<string, unknown>[], device: string, signal?: AbortSignal): Promise<{ kept: number; dropped: number }> {
+    const res = await this.fetchImpl(`${this.origin}/v1/events`, {
+      method: 'POST',
+      headers: { ...this.auth(apiKey), ...JSON_HEADERS, ...this.where(device) },
+      body: JSON.stringify({ events }),
+      signal: signal ?? null,
+    })
+    if (!res.ok) await fail(res)
+    const data = (await res.json().catch(() => ({}))) as { kept?: number; dropped?: number }
+    return { kept: Number(data.kept ?? 0), dropped: Number(data.dropped ?? 0) }
+  }
+
+  /** The device and the platform, on what this computer sends up of its own accord. */
+  private where(device: string): Record<string, string> {
+    return { ...(device ? { 'x-nanomuse-device': device } : {}), 'x-nanomuse-platform': 'desktop' }
   }
 
   private auth(apiKey: string): Record<string, string> {

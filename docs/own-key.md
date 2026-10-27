@@ -63,6 +63,9 @@ short videos.
 | OpenCode Zen | ● | | | | outside mainland China | [opencode.ai/auth](https://opencode.ai/auth) |
 | OpenCode Go | ● | | | | outside mainland China | [opencode.ai/auth](https://opencode.ai/auth) |
 | Standard Compute | ● | | | | outside mainland China | [standardcompute.com](https://standardcompute.com/dashboard/api-keys) |
+| API Route | ● | | | | outside mainland China | [api-route.com](https://www.api-route.com/api-keys) |
+| Cheaper Inference | ● | | | | outside mainland China | [cheaperinference.com](https://cheaperinference.com/signup) |
+| Opper | ● | | | | outside mainland China | [platform.opper.ai](https://platform.opper.ai) |
 | Ollama / LM Studio / vLLM (on your machine) | ● | | | | both | no key |
 
 Only Bailian has a dot under *Clips* because nanoMuse's clip generation speaks
@@ -97,6 +100,9 @@ or paste it into a chat.**
 - **OpenCode Zen.** A key from [opencode.ai/auth](https://opencode.ai/auth); pay per request from a balance, a few models are free. Base URL `https://opencode.ai/zen/v1`. Only the models on the OpenAI shape are reached, so chat and no hands: the vision model OpenCode lists, `deepseek-v4-flash-vision-exp`, is an id DeepSeek has retired on its own platform. OpenCode publishes no plan sign-in, only a key, so there is nothing to sign in with here.
 - **OpenCode Go.** The subscription on the same host: Go ($10 a month) or Go Plus ($40) in the OpenCode console, then a key from [opencode.ai/auth](https://opencode.ai/auth). Base URL `https://opencode.ai/zen/go/v1`. Usage is counted per model against monthly, weekly and five hour limits. OpenCode means Go for coding agents and asks a client to name itself and to send one stable id per conversation in `x-opencode-session` ([its Go page](https://opencode.ai/go), under *Can I use Go with other coding agents?*). The runtime (and so the web console) sends `nanoMuse/<version>` as its user agent and the conversation's id in that header on every Go request; a call outside a conversation, such as the connection test, carries an id of its own. The desktop writes Go as its model adapter's own OpenCode Go route, which sends the same header and reaches each model on its own shape: the desktop offers the models that route's catalog lists, those on the Responses and Messages shapes included; elsewhere only the OpenAI shape is reached. The phone apps send it too, on chat and Responses requests to OpenCode's host: the id is the chat's prompt cache key, a hash of its first message that stays the same across its turns (two chats that open with the very same words share one). Chat only, for the same reason as Zen.
 - **Standard Compute.** A key from [standardcompute.com/dashboard/api-keys](https://standardcompute.com/dashboard/api-keys); a fixed monthly plan from $19 with a monthly compute budget, and once it is used, requests stop with 402 (no overage charges). Base URL `https://api.stdcmpt.com/v1`. The default model, `standardcompute`, is a router that picks a model for each request from the ones enabled on the account's Models page; any id from `https://api.stdcmpt.com/v1/models` can be set instead. Chat only: the router's entry in that list declares no picture input, so the hands are not claimed.
+- **Cheaper Inference.** A key from [cheaperinference.com/signup](https://cheaperinference.com/signup); one key reaches models from several labs. Base URL `https://api.cheaperinference.com/v1`. The default model is `gpt-5.4-mini`; any id from `https://api.cheaperinference.com/v1/models` can be set instead. Chat only here, on the OpenAI shape.
+- **API Route.** Sign in and open [API keys](https://www.api-route.com/api-keys), then add balance. Base URL `https://global.api-route.com/v1`; the default model is `gpt-6.1-sol`, verified in `/v1/models` and with a chat request. Other model ids must come from the list available to your key. Usage is deducted from your prepaid API Route balance at the selected model's [current rates](https://www.api-route.com/pricing), separately from nanoMuse Cloud. Chat only here; picture input, image generation and video have not been verified. See the [provider documentation](https://www.api-route.com/docs/overview).
+- **Opper.** A key from *API Keys* at [platform.opper.ai](https://platform.opper.ai); one key reaches 700+ models from 50+ providers at the providers' rates, with no markup, and the gateway is hosted in the EU. Base URL `https://api.opper.ai/v3/compat`. The default model is `claude-sonnet-4-6`; any id from `https://api.opper.ai/v3/compat/models` can be set instead, and a `provider/model` id such as `anthropic/claude-sonnet-4-6` pins one route. Chat only here, on the OpenAI shape.
 
 **Paste it into nanoMuse.**
 
@@ -109,9 +115,9 @@ or paste it into a chat.**
 one switch per job the provider can do (chat, operating the screen, making
 pictures, making clips), all on. *Use it* moves those rows to this provider, on
 the catalogue's default model for each job (or the first model of its list that
-fits); *Not now* changes nothing, and so does a switch you turned off. Signed
-in, the card says nanoMuse Cloud keeps the rest. Every row can be changed later
-under *Settings › Models* (web console: *Connections*).
+fits); *Not now* changes nothing, and so does a switch you turned off. The
+other model choices stay as they are. Every row can be changed later under
+*Settings › Models* (web console: *Connections*).
 
 ## Which model does what
 
@@ -127,11 +133,15 @@ model*, *Hands model*, *Making pictures* and *Making clips* cards on
 | Making pictures | Portraits of your Muse and the pictures you ask for. | Your providers with image models |
 | Making clips | Short clips of your Muse. | Your providers with video models (Bailian) |
 
-Each row shows `provider · model` and opens a picker: the *nanoMuse Cloud*
-group first while signed in, its recommended model marked, then one group per
-provider of yours holding only the models that fit. A provider without the
-capability does not appear in that row at all. A row nothing covers shows the
-one sentence naming who could, and *Add a provider*. A chat pick is the default
+Each row shows `provider · model` and opens a picker. Chat and screen operation
+show the *nanoMuse Cloud* group first while signed in, with the relay's
+lane-specific recommendation marked; media rows show only providers of yours
+because the hosted Cloud does not generate pictures or clips. A self-hosted
+relay appears in a media row only when its operator explicitly enabled and
+advertised that capability. Each provider group holds only models that fit.
+A provider without the capability does not appear in that row at all. A row
+nothing covers shows the one sentence naming who could, and *Add a provider*.
+A chat pick is the default
 for new chats and moves the main chat (*Applies to the main chat and to new
 chats; a side chat keeps its model.*): the main chat is the one conversation the
 Chat tab always shows and is never new, so it would otherwise stay on the
@@ -154,18 +164,20 @@ chat's own picker do.
 
 **Automatic.** The screen, pictures and clips rows open with an *Automatic*
 entry that says what it gives right now (*Currently nanoMuse Cloud ·
-qwen3.8-27b*, say). Pick it and the row forgets any choice made there and
+Qwen/Qwen3.6-27B-FP8*, say, for screen operation). Pick it and the row forgets any choice made there and
 follows one order: the chat model's provider when it is one of yours and can do
-the job (its catalogue default), else nanoMuse Cloud while signed in and switched on when its menu offers that job, else the
-first provider of yours that can. A choice you made always wins; nanoMuse Cloud
+the job (its catalogue default), else a signed-in relay while switched on only
+when its live menu offers that job, else the first provider of yours that can.
+The hosted Cloud menu offers chat and screen operation, not media generation.
+A choice you made always wins; nanoMuse Cloud
 never steps in front of a provider you chose. Each device keeps its own choice,
 because keys never leave the device where they were entered.
 
 **No silent fallback.** When a model of your own fails under a turn, nothing
 switches by itself: the error card offers *Use nanoMuse Cloud this time*
 (signed in only), which runs that one turn on the account's model and changes
-no row. The desktop shows the same button after a failed studio round and a
-failed set of clips.
+no row. A failed picture or clip has no Cloud retry: fix or choose a media
+provider of your own and retry there.
 
 **Thinking level (desktop).** The composer's model picker offers a thinking
 level for a model of yours where the vendor documents one, in the vendor's own
@@ -184,7 +196,7 @@ endpoint. A key saved before this build gets the control at the next start.
 
 **Switching nanoMuse Cloud off.** While signed in, the Models page has one
 switch, *Use nanoMuse Cloud models*. Off, the Cloud leaves the pickers and the
-automatic order, no side call (a chat's title, memory, a portrait, the hands)
+automatic order, no side call (a chat's title, memory or the hands)
 runs on it, and the only thing that spends your allowance is the *Use nanoMuse
 Cloud this time* button, each time you tap it. You stay signed in: sync, your
 devices and the account page keep working. The Cloud provider cannot be deleted

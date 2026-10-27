@@ -257,6 +257,9 @@ html[data-nm-platform='darwin']:not([data-nm-fullscreen]) .nm-col-top { height: 
    where no scroll reaches it (#261: a long thread from the phone could not be scrolled up at all);
    an auto margin takes the free space while there is some and is nothing once the thread is taller
    than the body, so the body scrolls from its first line. */
+/* The standing answers above the chat's approval card for a hands step (ApprovalScopes.ts). */
+.nm-ap-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; box-sizing: border-box; width: min(var(--dsh-composer-card-max-width, 712px), 100%); margin: 0 auto 6px; padding: 0 var(--dsh-composer-side-clearance, 16px); }
+.nm-ap-scope-label { font-size: 13px; color: var(--dsw-alias-label-tertiary); margin-right: 2px; }
 [data-conversation-content][data-content-phase="hero"] > [data-conversation-scroll]:has(.nm-remote, .nm-traj) { justify-content: flex-start; }
 [data-conversation-content][data-content-phase="hero"] > [data-conversation-scroll] > .nm-remote { flex: 0 0 auto; width: min(var(--dsh-chat-content-width, 680px), 100%); align-self: center; box-sizing: border-box; padding: 0 var(--dsh-composer-side-clearance, 16px); }
 [data-conversation-content][data-content-phase="hero"] > [data-conversation-scroll] > :is(.nm-remote, .nm-traj):not(:is(.nm-remote, .nm-traj) ~ :is(.nm-remote, .nm-traj)) { margin-top: auto; padding-top: 16px; }
@@ -327,9 +330,9 @@ html[data-nm-muse] [data-composer-card] > div:last-child > div:last-child { orde
 html[data-nm-muse] [data-composer-card] > [class*="_rail"] { flex-basis: 100%; order: -2; }
 html[data-nm-muse] [data-composer-card] > [class*="_accessory"] { flex-basis: 100%; order: -3; padding-top: 4px !important; }
 html[data-nm-muse] [data-composer-card] [class*="_modes"] { display: none !important; }
-/* the right-hand seats stay for the microphone; the model picker goes (Settings keeps it) */
+/* Keep the harness's compact model control: for models that expose reasoning levels it is
+   the one lightweight place to change the level for this chat. The other harness controls stay hidden. */
 html[data-nm-muse] [data-composer-card] [class*="_standardControls"] { gap: 2px !important; }
-html[data-nm-muse] [data-composer-card] [data-slot="conversation.input.model"] { display: none !important; }
 html[data-nm-muse] [data-composer-card] [class*="_activity"] { display: none !important; }
 html[data-nm-muse] [data-composer-card] [class*="_add"] { width: 34px; height: 34px; border-radius: 50%; color: var(--dsw-alias-label-secondary); }
 /* the send disc is the ink (black in the light, white in the dark) with the arrow in the opposite colour */
@@ -684,6 +687,20 @@ html[data-nm-platform='darwin']:not([data-nm-fullscreen]) .nm-pf-top { padding-t
 .nm-headsup-text { flex: 1; min-width: 0; }
 .nm-headsup-text .nm-ob-link.nm-inline { color: var(--nm-blue); font-weight: 600; font-size: 12.5px; }
 .nm-headsup-close { width: 22px; height: 22px; flex: none; }
+.nm-waitline { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; padding: 0 12px; font-size: 12px; line-height: 1.4; color: var(--dsw-alias-label-tertiary); }
+.nm-waitline .nm-ob-link.nm-inline { color: var(--nm-blue); font-weight: 600; font-size: 12px; }
+/* The thumbs beside a reply (0.31) sit with the quote button in the tail's seat; the reason chips open to their right. */
+.nm-thumbs { display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+.nm-thumb { width: 24px; height: 24px; border: 0; padding: 0; border-radius: 6px; background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.nm-thumb:hover { background: var(--nm-hover); color: var(--dsw-alias-label-primary); }
+.nm-thumb.nm-on { color: var(--dsw-alias-label-primary); }
+.nm-fb-reasons { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: 6px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.nm-fb-why, .nm-fb-thanks { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin-left: 6px; }
+.nm-fb-chip { padding: 3px 9px; font-size: 12px; }
+.nm-fb-reasons .nm-ob-link.nm-inline, .nm-stopask .nm-ob-link.nm-inline { color: var(--nm-blue); font-weight: 600; font-size: 12px; }
+/* The question after a Stop, above the composer, in the wait line's place. */
+.nm-stopask { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; padding: 0 12px; font-size: 12px; line-height: 1.4; color: var(--dsw-alias-label-tertiary); }
+.nm-stopask-text { margin-right: 4px; }
 .nm-star-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: var(--nm-radius); background: var(--nm-card); border: 1px solid var(--nm-divider); }
 .nm-star-head { display: flex; gap: 10px; align-items: flex-start; }
 .nm-star-icon { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; background: color-mix(in srgb, var(--nm-accent) 18%, transparent); color: var(--nm-accent); }
@@ -1371,6 +1388,9 @@ html[data-nm-muse] [data-conversation-scroll]:has(> .nm-intro-host) [class*="_co
 .nm-naming-row.nm-selected { border: 1.5px solid var(--nm-blue); color: var(--nm-blue); }
 .nm-naming-row.nm-dimmed { opacity: 0.4; }
 .nm-naming-custom { border-style: dashed; color: var(--dsw-alias-label-tertiary); background: transparent; }
+.nm-naming input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 15px; padding: 0; }
+.nm-naming-confirm { flex: none; padding: 5px 12px; border-radius: 9px; border: 1px solid var(--nm-divider); background: var(--nm-base); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13.5px; cursor: pointer; }
+.nm-naming-confirm:disabled { opacity: 0.5; cursor: default; }
 
 /* The Feed (C5): the intro card, the "how" card under the empty state, the routine row in the sliders. */
 .nm-feed-intro { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; padding: 14px 16px; border-radius: var(--nm-radius); background: var(--nm-card); border: 1px solid var(--nm-divider); }

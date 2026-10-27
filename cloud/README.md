@@ -23,7 +23,11 @@ its base URL.
   (streaming or not) go to the upstream with the relay's key. The hosted menu contains
   only `Qwen/Qwen3.6-27B-FP8`, including its image-input support for chat and GUI
   operation. Image and video generation require a provider and API key configured by
-  the person on their device.
+  the person on their device. A streamed turn that waits for one of the relay's
+  `CHAT_CONCURRENCY` slots, or for a slow provider's first bytes, hears about it: chunks
+  with `choices: []` and a `nanomuse: {phase: queued | working, ahead, waited_ms}` field
+  while it queues, SSE comment lines while the provider thinks (0.31; shapes every
+  client already skips; details in [docs/cloud.md](../docs/cloud.md#protocol)).
 - **Ledger.** Every request is charged from the account's grant using the
   upstream's own `usage` (for streams, from the final usage chunk). Cheaper
   models are charged with a multiplier; pictures cost a flat amount. One
@@ -33,11 +37,12 @@ its base URL.
   up by HMAC-SHA256 hash, shown as a display hint (`138****8000`,
   `so***@example.com`), and kept AES-GCM-encrypted under a key derived from
   `CLOUD_SECRET` so the operator's page can tell accounts apart; the database
-  file on its own reveals none of them. Message content is forwarded, never
-  written to disk. The database holds: hashed and encrypted identifier, key
-  hashes, the keyed hash of a code still waiting to be used (six digits, so
-  hashing it plainly would be a table an attacker could work through), video
-  task ids, token counts per request, and the profile below.
+  file on its own reveals none of them. The database holds: hashed and
+  encrypted identifier, key hashes, the keyed hash of a code still waiting to
+  be used (six digits, so hashing it plainly would be a table an attacker could
+  work through), video task ids, token counts per request, the profile below
+  and, since 0.29, *the record* — each chat turn in full, the person's own data
+  (see *The record*; `RECORD_TURNS=0` keeps none of it).
 - **One look on every device.** `GET` / `PUT` / `DELETE /v1/me/profile` keep
   the agent's name and face for the account — the dragon, an emoji on a colour,
   or a face drawn in the avatar studio with its five small stills (WebP, 200 KB
@@ -64,15 +69,18 @@ Errors carry a stable `code` the app can turn into a sentence:
 | status | code | meaning |
 |---|---|---|
 | 400 | `bad_identifier` | not a phone number or e-mail address |
-| 400 | `phone_region` | a number the SMS sender cannot reach (号码认证 sends to mainland China only); e-mail works everywhere |
+| 400 | `phone_region` | a number the SMS sender cannot reach (the Aliyun sender covers mainland China only); e-mail works everywhere |
 | 400 | `code_wrong` / `code_expired` | verification code |
 | 400 | `channel_unsupported` | this relay's `CODE_SENDER` does not send codes that way (SMS or e-mail); the sentence says which |
+| 429 | `code_too_often` | too many codes for the identifier in ten minutes or from the address in an hour, or the SMS carrier's own limit for the number (Aliyun: one a minute, five an hour, ten a day); wait |
 | 502 | `send_failed` | the SMS or mail provider refused or did not answer; the code was not sent |
-| 400 | `bad_credentials` / `no_password` / `password_short` / `password_long` / `password_weak` / `password_wrong` / `password_required` | the password sign-in and the password form (`bad_credentials` is 401; `locked` is 429 after too many wrong passwords) |
+| 400 | `bad_credentials` / `password_short` / `password_long` / `password_weak` / `password_wrong` / `password_required` | the password sign-in and the password form (`bad_credentials` is 401; `locked` is 429 after too many wrong passwords) |
 | 404 | `no_session` | the sign-in to revoke no longer exists |
 | 409 | `device_online` | `DELETE /v1/devices/{id}` (or the hub's `forget`) for a device that is connected right now; sign out on it first |
 | 409 | `sync_off` | a `/v1/sync/*` call while the person has conversation sync turned off |
 | 413 | `too_large` | the body is over `MAX_REQUEST_BYTES`, or a profile over its limit; `too_many_conversations` / `too_many_messages` are the sync push's own 413s |
+| 413 | `quota_exceeded` | a file (`PUT /v1/blobs`, or a picture inlined in a turn) would take the account past `MEDIA_ACCOUNT_MAX_MB`; delete the record or send fewer pictures (0.30) |
+| 507 | `store_full` | the relay's file store is at `MEDIA_MAX_GB` and the hourly trim has not run yet; the file was not taken, send it later (0.30) |
 | 400 | `bad_request` | the body did not parse or a field is wrong; the message says which |
 | 400 | `client_disconnected` | the app went away while its request body was still arriving; nothing reached the provider |
 | 404 | `no_task` | an image or video job id the relay does not know (or not this account's) |
@@ -86,11 +94,11 @@ Errors carry a stable `code` the app can turn into a sentence:
 | 400 | `no_secrets_in_profile` | a profile `connectors` entry carried a key named like a credential; nothing was stored |
 | 400 | `too_many_connectors` | the write would leave more than 64 connectors on the account |
 | 429 | `allowance_exhausted` | the account's pool is spent; the body also carries `left`, `grant`, `region`, `ways` (the ways on in order for that person), `guidance` (0.21: every provider for the region with what each covers, the plans an app can sign in with), `invite_url`, `invite_bonus_cny`, `own_key_docs`, `openrouter_url` |
-| 429 | `code_too_often` / `rate_limited` / `daily_cap` | (`daily_cap` only with the legacy token cap on) |
+| 429 | `code_too_often` / `rate_limited` / `daily_cap` | (`daily_cap` only with the legacy token cap on; `rate_limited` is also what `POST /v1/turns` and `PUT /v1/blobs` answer past `RECORD_UPLOADS_PER_MINUTE`) |
 | 429 | `too_many_in_flight` | `MAX_IN_FLIGHT` requests of the account are already under way; `retry_after` in the body |
 | 429 | `provider_busy` | the image provider answered 429 even after the relay queued and retried (`IMAGE_CONCURRENCY`, `IMAGE_RETRIES`); `retry_after` seconds in the body |
 | 400 | `content_rejected` | the provider's content check declined the words (a chat request or an image prompt); the provider's own line rides along under `upstream` |
-| 400 | `upstream_400` | any other refusal of the request itself; the provider's message passed through |
+| 400 | `upstream_400` | any other refusal of the request itself; the provider's message passed through (read from an object or, as Gemini's OpenAI-compatible endpoint sends it, from the first object of a list) |
 | 502 | `upstream` / `upstream_auth` / `upstream_model` / `upstream_busy` / `upstream_<status>` | the provider failed; a plain sentence, the provider's line under `upstream` |
 | 503 | `upstream_unconfigured` | the key for the requested chat or media provider is missing |
 | 403 | `signup_closed` | the operator closed sign-ups (0.22, *Controls*); an identifier without an account gets this before any code is sent, existing accounts sign in as before |
@@ -98,6 +106,7 @@ Errors carry a stable `code` the app can turn into a sentence:
 | 503 | `service_paused` | the *Cloud service* switch is off (0.22): every call but `/healthz`, `/v1/config`, `/app` and `/v1/admin/*`; `paused: true` in the body |
 | 503 | `sync_paused` | the *Conversation sync* switch is off (0.22): `/v1/sync/*` except `GET /v1/sync/state`, which answers with `paused: true` |
 | 503 | `hub_paused` | the *Device hub* switch is off (0.22): `GET /v1/devices`; the hub socket itself closes with `4003 hub_paused` |
+| 403 | `client_not_supported` | the *nanoMuse clients only* switch is on (0.28, the default) and the `User-Agent` is not one of the nanoMuse apps, the runtime or a browser: a pool worker, an SDK, a script, the unbranded upstream app; `client` in the body names the family. Members are answered from anything; the sign-in, the account and the allowance are untouched |
 
 ## Run it
 
@@ -164,13 +173,13 @@ for the full list. The ones that matter:
 | variable | default | |
 |---|---|---|
 | `UPSTREAM_BASE` / `UPSTREAM_KEY` | Model Studio compatible-mode | where chat goes |
-| `CHAT_DEFAULTS` | `{"enable_thinking": false}` | merged into chat requests for fields the app did not set |
+| `CHAT_DEFAULTS` | `{"enable_thinking": false}` | merged into chat requests for fields the app did not set; for Qwen behind vLLM use `{"chat_template_kwargs":{"enable_thinking":false}}` |
 | `SIGNUP_OPEN` | `1` | anyone may sign in; `0` = members only (a private relay). *Runtime setting* — see below |
 | `ALLOWED_IDENTIFIERS` | empty | comma-separated numbers / addresses of the **members**: no spend limit |
 | `REVIEW_ADDRESSES`, `REVIEW_CODE` | empty (off) | an app store reviewer's sign-in: for these e-mail addresses no code is sent and the six-digit `REVIEW_CODE` signs in — see *For App Store review* below |
 | `ALLOWANCE_CNY` | 10 | yuan per non-member account **for its lifetime**, at the list prices below; 0 = no limit. *Runtime setting* |
-| `INVITE_BONUS_CNY` | 5 | added to **both** pools, the inviter's and the newcomer's, per new person who signs up with the code, paid once the newcomer uses the relay (at least `INVITE_SETTLE_MIN_SPENT_UY` micro-yuan or a registered Hub device, and not from the inviter's own network address). *Runtime setting* |
-| `INVITE_SETTLE_MIN_SPENT_UY` | 200 | minimum provider spend (in micro-yuan) by an invited account before its invite bonus is settled when it has not registered a Hub device; 0 settles on the first charged request |
+| `INVITE_BONUS_CNY` | 5 | added to **both** pools, the inviter's and the newcomer's, per new person who signs up with the code, paid once the newcomer has really used the relay (at least `INVITE_SETTLE_MIN_SPENT_UY` micro-yuan of successful provider spend, and not from the inviter's own network address). *Runtime setting* |
+| `INVITE_SETTLE_MIN_SPENT_UY` | 200 | minimum cumulative successful provider spend (in micro-yuan) by an invited account before its invite bonus is settled; 0 settles on the first charged request |
 | `SIGNUP_PER_DOMAIN_DAY` | 5 | new accounts one e-mail domain may open per rolling 24 hours when the domain is not a well-known mail provider (gmail.com, outlook.com, qq.com, 163.com and the like are never limited; phones never are); past it `POST /v1/auth/code` answers `429 domain_limited` and the timeline across accounts gets `signup.domain_limited` with the domain; 0 = off |
 | `SIGNUP_DOMAIN_ALLOW` | empty | comma-separated domains that join the built-in list of unlimited ones, your company's or school's for instance |
 | `SIGNUP_DOMAIN_BLOCK` | empty | comma-separated disposable mail domains blocked from opening new accounts in addition to the built-in blocklist (`DEFAULT_SIGNUP_DOMAIN_BLOCK`); `SIGNUP_DOMAIN_ALLOW` overrides an entry |
@@ -192,6 +201,15 @@ for the full list. The ones that matter:
 | `UPSTREAM_TIMEOUT_S` | 180 | how long one call to the provider may take (connecting has 20 s of its own); a reservation that outlives it by two minutes is dropped |
 | `CHAT_CONCURRENCY` | 12 | chat requests at the provider at once across all accounts (0 = off); the rest wait at the relay, so a burst does not overload one shared deployment |
 | `CHAT_RETRIES` | 2 | retries after an upstream 429 or 5xx received before any chat output starts (0 = off; capped at 5) |
+| `CALLS_KEEP_DAYS` | 90 | how long the per-call telemetry rows (`calls`: timings, outcome, shape, platform; never content) are kept before the hourly sweep removes them (0.28) |
+| `EVENTS_KEEP_DAYS` | 365 | how long the timelines' lines (`events`: sign-ins, devices joining, errors, refusals; never content) are kept before the hourly sweep removes them; the `account.deleted` lines and the ledger are never swept (0.29) |
+| `RECORD_TURNS` | `1` | the record (0.29): every chat turn kept in full — the request as sent, the answer as given, pictures as files — for the account's devices and the operator. `0` keeps none of it and answers 404 to `POST /v1/turns` and `PUT /v1/blobs` |
+| `RECORD_KEEP_DAYS` | 0 | how long a turn of the record stays; 0 = until the person deletes it (Data controls) or the account. The hourly sweep removes older turns and the files only they referenced |
+| `MEDIA_DIR` | `<database dir>/blobs` | where the record's files live, one per distinct picture, audio or clip, named by SHA-256 (`<aa>/<sha256>`); back it up with the database if you want the pictures back |
+| `MEDIA_MAX_GB` | 50 | the files' ceiling in all; past it the least recently used go first and their turns keep a reference to nothing (the words stay) |
+| `BLOB_MAX_BYTES` | 32 MiB | the largest file one `PUT /v1/blobs/{sha256}` may carry (a clip of the face, a picture) |
+| `MEDIA_ACCOUNT_MAX_MB` | 2048 | the most files one account may hold on the relay (its turns', its profile's and its uploads' together); a `PUT /v1/blobs` or an inlined picture past it answers 413 `quota_exceeded`, and once the store itself is at `MEDIA_MAX_GB` nothing more is taken until the hourly trim has run (507 `store_full`). 0 = no per-account cap (0.30) |
+| `RECORD_UPLOADS_PER_MINUTE` | 120 | own-key turns and files one account may send up a minute (`POST /v1/turns`, `PUT /v1/blobs`); past it 429 `rate_limited`, and the app sends the rest later (0.30) |
 | `CHAT_RETRY_BASE_S` | 0.5 | first retry pause in seconds; each later pause doubles |
 | `TRUSTED_PROXIES` | empty | whose `X-Forwarded-For` to believe, comma-separated addresses or networks (`*` for every peer); empty = every loopback, private, link-local and shared address (Caddy on this box or the compose network, a tailnet). Set, it is the whole list: a non-global peer not on it is not believed either |
 | `PASSWORD_MIN_LEN` | 8 | the shortest password the relay accepts (`400 password_short` below it) |
@@ -213,7 +231,7 @@ for the full list. The ones that matter:
 | `CLOUD_GEOIP` | `1` | name where an address is on the operator's page — country, province, city — from ip2region's offline database, fetched once into the data directory (0.11); `0` = addresses only |
 | `CLOUD_GEOIP_DB`, `CLOUD_GEOIP_URL`, `CLOUD_GEOIP_V6_URL` | next to the database; the project's `ip2region_v4.xdb`; empty | the file, where to fetch it, and the IPv6 file (37 MB) for a relay reached over IPv6 |
 | `HUB_ENABLED` | `true` | the devices hub at `/v1/hub` and the web console at `/app` ([docs/hub.md](../docs/hub.md)) |
-| `HUB_FRAME_LIMIT` | 16 MB | largest hub frame (files and screenshots travel inside frames); one socket may also send at most 60 frames and 8 MB a second sustained (twice that in a burst) — over it frames are dropped with one `rate_limited` error a second, and a socket that keeps flooding is closed with 4008 (0.13) |
+| `HUB_FRAME_LIMIT` | 16 MB | largest hub frame (files and screenshots travel inside frames); one socket may also send at most 60 frames and 8 MB a second sustained (twice that in a burst); over it frames are dropped with one `rate_limited` error a second, and a socket that keeps flooding is closed with 4008 (0.13); one address may open 60 sockets a minute and one account may have 32 devices connected at once, over either the socket is closed with 4008 `too_many_connections` before any key is checked (0.30) |
 | `MAX_REQUEST_BYTES` | 16 MB (0.20; was 6) | largest REST request body — a chat request with a few screenshots, a sync push of 200 messages; over it the answer is 413 `too_large`, *Request body is N MB; this relay accepts up to M MB*. A declared `Content-Length` over the limit is refused before a byte is read, and a body that grows past it is refused as it arrives, so the relay never buffers more than the limit for one request. Both Caddy sites (`cloud/Caddyfile`, `deploy/nanomuse-hk/cloud.nanomuse.cn.caddy`) cap bodies at `request_body max_size 20MB`: just above 16 MiB plus multipart overhead for `/v1/images/edits`, so a legitimate payload always reaches the relay's own 413 message and nothing larger reaches the relay at all; raise both together if you raise this |
 | `GITHUB_REPO` | read off `REPO_URL` (`nano-muse/nanoMuse`) | the repository whose stars, forks, watchers, open issues and release downloads the relay reads (0.22, *Site* on the operator's page) — `owner/name` |
 | `GITHUB_TOKEN` | empty | optional; without one GitHub allows 60 requests an hour, the collector uses two every six hours. Set it only if the relay shares its address with something else that polls GitHub (a `403` from GitHub shows on the page and says so) |
@@ -304,17 +322,33 @@ relay's own numbers.
 
 ### Controls (0.22)
 
-Five switches the operator flips without a restart or a deploy, from the
+Six switches the operator flips without a restart or a deploy, from the
 *Controls* page of the console, the command line or `POST
 /v1/admin/controls/{key}`: `free_allowance`, `signups`, `cloud_service`,
-`sync`, `hub`. Each is on by default, kept in the `controls` table so a
-restart keeps it, and applies to the next request. What each one refuses when
-off is in the error table above and, from the app's side, in
-[docs/cloud.md › Controls](../docs/cloud.md#controls); the console says the
-same thing in the row and again in the confirmation before it flips. Turning
-`cloud_service` or `hub` off closes every open hub socket (`4003 hub_paused`)
-and the answer says how many. The switches that are off are listed under
-`paused` in `/healthz`, `/v1/config`, `/v1/me` and `GET /v1/admin/settings`.
+`sync`, `hub` and, since 0.28, `apps_only`. Each is on by default, kept in the
+`controls` table so a restart keeps it, and applies to the next request. What
+each one refuses when off is in the error table above and, from the app's
+side, in [docs/cloud.md › Controls](../docs/cloud.md#controls); the console
+says the same thing in the row and again in the confirmation before it flips.
+Turning `cloud_service` or `hub` off closes every open hub socket (`4003
+hub_paused`) and the answer says how many. The five that pause a part of the
+service are listed under `paused` in `/healthz`, `/v1/config`, `/v1/me` and
+`GET /v1/admin/settings` while they are off.
+
+`apps_only` is the one switch that refuses while it is *on*: the models answer
+the nanoMuse apps, the desktop app, the Python runtime and the web console in
+a browser, and turn away everything else on a nanoMuse key with `403
+client_not_supported` (a pool worker, an SDK, a script, the unbranded upstream
+app; `client` in the body names the family, the message says to use a key of
+one's own in other software). It reads the `User-Agent`, so it stops honest
+programs and not impostors; the runtime of 1.0.6 and earlier, which called the
+models with the OpenAI SDK's own string (`AsyncOpenAI/Python`), is answered as
+the runtime it is, and so is a script on that SDK; members are exempt; the
+sign-in, the account page, sync and the hub do not look at it. A refusal is a `calls` row (`refused`,
+`client_not_supported`) and a `client.refused` line on the account's timeline,
+costs nothing and never counts as a budget refusal; the *Non-app traffic* page
+of the console lists what was turned away, by family. Off, any client with a
+valid key is answered, as before 0.28.
 
 Every change is a row in `control_audit` — who (`X-Admin-Actor` from the
 console's *Your name* field or the CLI's `--actor`, else `console` / `cli:<user>`
@@ -440,7 +474,9 @@ operator's page has a *Model catalog* panel. The relay also reads what a
 request says about reasoning before it applies `CHAT_DEFAULTS`: an app that
 sends `reasoning_effort` (or `thinking`, `thinking_budget`) asked for
 thinking, and the shipped `enable_thinking: false` would make Model Studio
-refuse the pair, so the default follows the request. `/v1/me` carries a `spend`
+refuse the pair, so the default follows the request. The same rule applies to
+`chat_template_kwargs.enable_thinking`, the switch used by Qwen chat templates
+behind vLLM. `/v1/me` carries a `spend`
 block (`total`, `grant`, `left`, `unlimited`, `warn` at 80 %, `usd_cny`,
 `total_usd`, `grant_usd`, `left_usd`, `today`, the bonus amounts,
 `own_key_docs`, `openrouter_url` and `ways`; the 0.4 names `daily_cap` /
@@ -689,6 +725,45 @@ drawer, which used to stay over it. *Activity* reads on past its first page
 *Stats* page opens with every metric's name as a jump to its panel; a KPI's
 second figure wraps under the first instead of being cut off.
 
+From 0.28 the console is rebuilt as a small React application (`cloud/console`,
+Vite + TypeScript; `npm run build` writes `nanomuse_cloud/console/admin/`
+under fixed names, and CI fails when the committed build differs from the
+sources). Every answer is cached by URL and refreshed in the background, so a
+page the operator has seen opens at once; the period (7 to 365 days), the
+language and the theme are remembered; every filter, tab and open drawer lives
+in the hash. The navigation is in three groups. **Insight**: *Overview*;
+*Live* (`GET /v1/admin/live`, every 3 s): the provider gate (`CHAT_CONCURRENCY`
+slots in use, how many wait), the requests under way with their phase (queued,
+awaiting the first token, streaming) and age, the last hour by minute with
+outcomes, latency percentiles and output tokens, the newest finished calls,
+and a verdict (smooth, busy, saturated) from the last ten minutes' queue share
+and queue P95; *Usage* (`/v1/admin/analytics/usage`): the day × model matrix
+by requests, cost, tokens, cached tokens or accounts, how much of the prompts
+the provider's cache served (overall and per model, from the ledger; and for
+the turns people ran on keys of their own and sent up, per provider and
+model, from the record), and a click on a day opens it
+(`/v1/admin/analytics/day`): hours × models, platforms, outcomes by model,
+latency by hour, the provider's error reasons, the top accounts; *Platforms*
+(`/v1/admin/analytics/platforms`): Android, iOS, desktop, the runtime, the
+browser and the rest side by side with versions, call telemetry, the hub's
+devices, and the models people configured themselves (from the hello's
+`device.llm`); *Retention* (`/v1/admin/analytics/cohorts`): how much of the free
+allowance is used, how fast it ran out, what the exhausted did next, who likely
+runs their own key (synced model replies without a cloud request), and weekly
+retention by sign-up week; *Screen operation* (`/v1/admin/analytics/hands`):
+turns that carried the operator's tools, by day, platform, tool and account;
+*Data quality* (`/v1/admin/analytics/quality`): the kept turns' shape, trivial
+and repeated prompts, accounts scored into high, medium and low tiers, likely
+scripted accounts, the prompts repeated most (as hashes); *Non-app traffic*
+(`/v1/admin/analytics/abuse`): client families that are not the apps, their
+share of requests and cost, the heaviest accounts on them, addresses shared by
+many accounts. **Operations**: *People* (filters, charts, batch pool changes,
+CSV, the account drawer with every action), *Invites*, *Places*, *Activity*,
+*Showcase*, *Data and sync*. **System**: *Health*, *Site and GitHub*, *Model
+catalog*, *Statistics*, *Controls*, *Settings*. Every string is in 简体中文 and
+English (`src/lib/locales.ts`; a test keeps the two tables in step), and the
+operator's name typed at the top goes out as `X-Admin-Actor`.
+
 **Every operator route**, each under `X-Admin-Token` (401 `admin` without it;
 `X-Admin-Actor` names who did it for the audit log, else `console`). An account
 is named by `account_id` or by `identifier` (the number or address itself):
@@ -712,12 +787,28 @@ GET    /v1/admin/demo            ?days=30        → the phone in the browser: v
 GET    /v1/admin/data            ?days=30        → Data controls: switches on, kept turns by day / model / app / account, the newest turns
 GET    /v1/admin/samples         ?account_id=&limit=&since=&before=&before_id=   → kept turns
 GET    /v1/admin/samples/export  ?since=&account_id=    → the same as JSON lines, without account ids or addresses
+GET    /v1/admin/turns           ?account_id=&limit=&since=&before=&before_id=&conversation=   → the record (0.29): whole turns, newest first
+GET    /v1/admin/turns/export    ?since=&account_id=    → the record as JSON lines, account ids included (it is the account's data, not the training set)
+GET    /v1/admin/record          ?days=30        → what the record holds: turns and files in all and per day, the store against MEDIA_MAX_GB
+GET    /v1/admin/blobs/{sha256}                  → one file of the record
+GET    /v1/admin/client-events   ?account_id=&kind=&since=&limit=&before=   → what the apps reported around turns (0.31): Sentinel decisions, approvals, stop reasons, thumbs; codes only
+GET    /v1/admin/client-events/export  ?since=&account_id=   → the same as JSON lines, with the subject pseudonym and no account id
+GET    /v1/admin/client-events/summary ?days=30  → by day and kind, and the split of each kind's codes
+GET    /v1/admin/deletions       ?since=         → the deletions ledger (0.31): the subject of every account that deleted its data or itself since
 GET    /v1/admin/sync                            → conversation sync in aggregate (never a text)
 GET    /v1/admin/catalog                         → the provider's models under the operator's key: which answer, which see, which were refused
 GET    /v1/admin/github          ?days=30        → stars, forks, watchers, open issues, release downloads by day
 POST   /v1/admin/github/refresh                  → read GitHub now
 GET    /v1/admin/stats           ?days=30        → every figure of the Stats page with how it is computed
 GET    /v1/admin/stats/{id}      ?days=30        → one figure as rows;  GET /v1/admin/stats/{id}.csv the same as CSV
+GET    /v1/admin/live                            → the model endpoint now (0.28): gate, requests under way, the last hour by minute, latency percentiles, newest calls
+GET    /v1/admin/analytics/usage ?days=30        → day × model: requests, tokens, cost, accounts
+GET    /v1/admin/analytics/day   ?day=<utc ts>   → one day: hours × models, platforms, outcomes, latency, error reasons, top accounts
+GET    /v1/admin/analytics/platforms ?days=30    → the apps side by side, versions, call telemetry, hub devices, reported own models
+GET    /v1/admin/analytics/cohorts ?days=30      → the free pool, exhaustion, what came after, own-key accounts, weekly retention
+GET    /v1/admin/analytics/hands ?days=30        → screen-operation turns by day, platform, tool and account
+GET    /v1/admin/analytics/quality ?days=30      → the kept turns' shape, accounts scored and tiered, repeated prompts (hashes)
+GET    /v1/admin/analytics/abuse ?days=30        → client families that are not the apps, sign-ins by client, shared addresses
 GET    /v1/admin/settings                        → the runtime settings in force, the environment's, which are overridden
 POST   /v1/admin/settings        {allowance_cny?, invite_bonus_cny?, signup_open?}   → the same; null puts a value back on its default
 POST   /v1/admin/allowance/apply                 → {accounts, allowance_cny}; the raised allowance reaches the accounts below it
@@ -800,6 +891,75 @@ operator's page has a *Data controls* panel from `GET /v1/admin/data`: how many
 accounts have the switch on (and how many ever turned it off), turns kept by
 day, model and app, switches turned on / default-on / off / deleted by day,
 tokens, the newest turns, and the export.
+
+### The record (0.29)
+
+Beside the training view, the relay keeps **the record**: every chat turn it
+answered, in full, as the account's own data. A turn is the request as the
+relay sent it to the provider (every message — the system prompt, what the
+person wrote, what tools returned — the tool definitions and the sampling
+fields; the relay's own `user` and `stream_options` left out and the model
+named as the app knows it) and the answer as the model gave it (the assistant's
+message whole — content, reasoning, tool calls, finish reason — put together
+from the stream when it streamed, with the usage). Pictures, audio and clips
+are taken out of the messages and written once each under `MEDIA_DIR`, named
+by their SHA-256; a `blob:sha256:<hex>` reference stands where each was, and
+the turn's `meta.media` lists them with type and size. A screenshot the app
+resends with every turn of a screen operation is one file however many turns
+name it. The row holds the request and the answer zlib-compressed, with the
+model, platform, the device and conversation the app named
+(`X-NanoMuse-Device`, `X-NanoMuse-Conversation`, 1.0.7 on), token counts, and
+`status` `ok` or `partial` (a stream that broke off; what arrived is kept). It
+is written after the answer has left, off the request's path, and is never the
+reason a chat fails.
+
+The record does not depend on the *Help improve* switch: that switch decides
+whether the training view of a turn joins the training set; the record is the
+service's own copy of what it did for the account. The same tap deletes both
+(`DELETE /v1/me/samples` → `{deleted, turns, files}`), deleting the account
+deletes it, and `RECORD_KEEP_DAYS` sweeps older turns. `/v1/me.contribute.record`
+tells the apps what is held: `{on, turns, own, files, media_bytes, keep_days}`.
+
+The account's devices read it back: `GET /v1/turns` (newest first, paged with
+`before`/`before_id` like samples, narrowed with `conversation=`), `GET
+/v1/turns/{id}`, and the files at `GET /v1/blobs/{sha256}` — only for an
+account that holds a reference to the file (one of its turns, its profile's
+clips, an upload of its own); a hash alone opens nothing. The person's view
+leaves the address out; the operator's (`/v1/admin/turns`, the export, one
+file at `/v1/admin/blobs/{sha256}`) has everything.
+
+A client that ran a turn on a key of its own sends it up afterwards so the
+account's record is whole wherever the model was: `PUT /v1/blobs/{sha256}` for
+each picture first (raw body with its `Content-Type`; the hash is checked;
+`HEAD` tells whether another device already sent it; `known: true` in the
+answer says so too), then `POST /v1/turns` with `model`, `messages`
+(`blob:sha256:` references, or data URLs inline within `MAX_REQUEST_BYTES`),
+`response: {message, usage?}`, and `provider`, `ts`, `conversation`, `id`
+and `status` as the client has them, and from 0.31 `run`, `turn`, `step`,
+`trajectory`, `trajectory_step` and `platform` (the provenance fields, the
+same as the `X-NanoMuse-*` headers of a Cloud turn; docs/cloud.md
+"Provenance"); the row says `source: own`, and with the account's *Help
+improve* switch on the turn's training view is kept as for a Cloud turn. A
+reference to a file the account never put up is a 400 `unknown_blob`. From
+0.31 the apps also send `POST /v1/events` with what happened around a turn
+(the Sentinel's decision, an approval's result, why a reply was stopped, a
+thumb up or down): codes and numbers tied to the turn's id, never a message
+(docs/cloud.md "Client events"); and every deletion of kept data or of an
+account writes the account's export pseudonym to a ledger
+(`GET /v1/admin/deletions`), so a training set built from an earlier export
+drops it (docs/cloud.md "Deletions"). The same files
+carry the face's clips between devices: a device that animated the drawn face
+puts the clips up and names them in the profile (`clips: {mood: {sha256,
+mime, bytes}}`, `PUT /v1/me/profile`); the others download them instead of
+rendering their own. The clips go with the face (`clips: null`, another
+avatar, `DELETE /v1/me/profile`).
+
+Capacity: a turn's words compress to a few kilobytes; the pictures are the
+bulk. `MEDIA_MAX_GB` bounds them — the hourly sweep removes the least
+recently used files past it, the turns stay and the apps see a reference to
+nothing for those pictures — and `GET /v1/admin/record` shows the store
+against the cap, by day. The files are not in the SQLite backup; back
+`MEDIA_DIR` up alongside if you want them back.
 
 ## Operating
 
@@ -885,8 +1045,10 @@ report can be matched to a ledger row without any content being logged.
   `${code}`; that review is Aliyun's process and takes a working day or two.
   Either way the relay makes and checks the code itself.
 - `both` routes by identifier type. Non-mainland numbers are accepted as
-  identifiers but the Aliyun sender only covers `+86`; use e-mail for the rest
-  or plug in another sender in `senders.py`.
+  identifiers but the Aliyun sender only covers `+86` with either service (an
+  international SMS costs many times a domestic one, and is what SMS-pumping
+  fraud dials); use e-mail for the rest or plug in another sender in
+  `senders.py`.
 
 Any sender but `log` needs `CLOUD_SECRET`: without a secret the relay would
 hash every identifier with the published development key while real codes go
@@ -919,3 +1081,18 @@ cd cloud && pip install -e ".[dev]" && pytest
 The suite runs the whole app in-process against a fake upstream: sign-up and
 throttling, model listing, charged chat (non-stream and stream), running out of
 tokens and topping up, key revocation, and the image translation.
+
+The admin console has its own checks and build:
+
+```bash
+cd cloud/console && npm ci && npm run check && npm run build
+```
+
+`npm run check` is the type check, the lint and the locale tests; `npm run
+build` writes `nanomuse_cloud/console/admin/` (`index.html`, `admin.js`,
+`admin.css`), which is committed with the change, and `npm run dev` serves the
+sources on `:5174` against a relay on `127.0.0.1:8787` (`NANOMUSE_RELAY=host:port`
+for another). The
+relay's `test_console.py` reads the sources too: every route the console asks
+for must be one the relay serves, every event kind the relay writes must have a
+name in both languages.

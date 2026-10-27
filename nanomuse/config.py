@@ -17,6 +17,7 @@ top; secrets it refers to live in the vault as ``{{vault:NAME}}``.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -341,12 +342,14 @@ class ContactsSettings(BaseModel):
 
 class SearchSettings(BaseModel):
     """Who answers ``web_search``. DuckDuckGo needs nothing and is the default; Brave,
-    Tavily and Serply want a key, You.com takes one or goes without (100 searches a day),
-    SearXNG wants the URL of an instance. A failed search falls back to DuckDuckGo once,
+    Tavily and Serply want a key, You.com and Parallel take one or go without, SearXNG
+    wants the URL of an instance. A failed search falls back to DuckDuckGo once,
     with a note, so a lapsed key does not stop a task."""
 
-    provider: Literal["duckduckgo", "brave", "tavily", "serply", "you", "searxng"] = "duckduckgo"
-    # Brave / Tavily / Serply, You.com optionally. May be a vault placeholder — the app
+    provider: Literal["duckduckgo", "brave", "tavily", "serply", "you", "parallel", "searxng"] = (
+        "duckduckgo"
+    )
+    # Brave / Tavily / Serply, You.com and Parallel optionally. May be a vault placeholder — the app
     # stores it as {{vault:SEARCH_API_KEY}}.
     api_key: str = ""
     # SearXNG: your instance, e.g. "http://127.0.0.1:8080".
@@ -508,10 +511,39 @@ class MCPServerSettings(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     url: str | None = None  # Streamable-HTTP / SSE endpoint
     risk: RiskLevel = RiskLevel.MODERATE
-    egress: bool = False
+    # Whether a call sends data off this machine. Unset, it is read from the address: a
+    # `url` on another host does (every argument travels there), a command or a loopback
+    # address does not. Set it to say otherwise.
+    egress: bool | None = None
     reads_private_data: bool = False
     # per-tool overrides, by the tool's own name on the server
     tools: dict[str, MCPToolPolicy] = Field(default_factory=dict)
+    # seconds the handshake (connect, initialize, the tool list) and one call may take; a
+    # server that stops answering is skipped at start, or its call fails, instead of
+    # holding the runtime
+    connect_timeout_s: float = 30.0
+    call_timeout_s: float = 120.0
+
+    @property
+    def remote_host(self) -> str | None:
+        """The host a `url` points at when it is not this machine, else None."""
+        if not self.url:
+            return None
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(self.url).hostname or "").lower()
+        if (
+            not host
+            or host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+            or host.startswith("127.")
+        ):
+            return None
+        return host
+
+    @property
+    def sends_out(self) -> bool:
+        """`egress` as set, else whether the address is on another host."""
+        return self.egress if self.egress is not None else self.remote_host is not None
 
 
 class MCPSettings(BaseModel):
@@ -927,6 +959,7 @@ def apply_app_settings(settings: Settings, data: dict[str, Any]) -> None:
             "tavily",
             "serply",
             "you",
+            "parallel",
             "searxng",
         ):
             web.provider = search["provider"]
@@ -1097,13 +1130,37 @@ def unknown_keys(
     return out
 
 
+#: the byte-order marks a text editor or a Windows shell may put in front of a config file,
+#: and the encoding each one names
+_BYTE_ORDER_MARKS = (
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+
+def read_toml(path: Path) -> dict[str, Any]:
+    """A TOML file's tables, whichever program wrote it.
+
+    TOML reads neither of the two ways Windows writes a text file: Notepad offers *UTF-8 with
+    a BOM*, and PowerShell's ``>`` and ``Out-File`` write UTF-16LE. A ``config.toml`` saved
+    either way was "not valid TOML" at its first byte (and the UTF-16 one raised a bare
+    ``UnicodeDecodeError`` out of the console). The mark names the encoding; a file without
+    one is read exactly as before.
+    """
+    data = path.read_bytes()
+    for bom, encoding in _BYTE_ORDER_MARKS:
+        if data.startswith(bom):
+            return tomllib.loads(data[len(bom) :].decode(encoding))
+    return tomllib.loads(data.decode("utf-8"))
+
+
 def load_settings(path: str | Path | None = None) -> Settings:
     """Load settings from TOML (if found) + environment + what was changed in the app."""
     config_file = find_config_file(path)
     raw: dict[str, Any] = {}
     if config_file is not None:
-        with config_file.open("rb") as fh:
-            raw = tomllib.load(fh)
+        raw = read_toml(config_file)
         for key in unknown_keys(raw):
             logger.warning("{}: unknown key {} is ignored (a typo?)", config_file, key)
     raw = _expand_env(raw)
@@ -1148,6 +1205,7 @@ __all__ = [
     "find_config_file",
     "load_app_settings",
     "load_settings",
+    "read_toml",
     "save_app_settings",
     "unknown_keys",
 ]

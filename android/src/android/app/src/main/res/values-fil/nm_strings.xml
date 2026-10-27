@@ -132,6 +132,9 @@
     <string name="nm_routine_paused">Naka-off</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">Routine · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">Magdagdag ng isa pang oras</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">Naka-iskedyul para sa %1$s</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">Mga Ideya</string>
@@ -833,16 +836,21 @@
     <string name="nm_cloud_ev_contribute_default">Mga kontrol sa data: naka-on para sa mga bagong account</string>
     <string name="nm_data_title">Mga kontrol sa data</string>
     <string name="nm_data_improve">Tumulong na pagbutihin ang mga AI model ng nanoMuse</string>
-    <string name="nm_data_why">Habang naka-on ito, ang teksto ng mga chat mo sa mga modelo ng nanoMuse Cloud (ang isinulat mo, ang isinagot nito at ang mga tool na pinili nitong tawagin) ay itinatago sa relay para sanayin ang sariling open model ng komunidad. Hindi ang memorya o SOUL mo (ang system prompt), hindi ang ibinalik ng mga tool, hindi ang mga larawan, at hindi kailanman katabi ng kung sino ka. Hindi kailanman dumadaan sa relay ang sarili mong API key.</string>
+    <string name="nm_data_why">Habang naka-on ito, ang teksto ng mga chat na iyon (ang isinulat mo, ang isinagot ng modelo at ang mga tool na pinili nitong tawagin) ay pumapasok din sa training set ng sariling open model ng komunidad: wala ang memorya o SOUL mo (ang system prompt), ang ibinalik ng mga tool, ang mga larawan, o kung sino ka. Kapag naka-off, wala nang papasok pa; ang record mismo ay nananatili hanggang burahin mo. Ang mga turn gamit ang sarili mong key ay nasa record, hindi kailanman sa training set.</string>
+    <string name="nm_data_record_why">Itinatago ng nanoMuse Cloud nang buo ang bawat turn ng mga chat mo sa mga modelo nito bilang record ng account mo: ang ipinadala sa modelo, ang isinagot nito, ang mga tool at ang ibinalik ng mga ito, ang mga larawan bilang file. Mula sa app 1.0.7, kasama na rin ang mga turn na sinagot gamit ang sarili mong key. Data mo ito: ang mga device mo lang at ang nagpapatakbo ng relay ang makakabasa nito.</string>
+    <string name="nm_data_record_held">May %1$d turn ng account na ito sa record (%2$d gamit ang sarili mong mga key), na may %3$d larawan.</string>
+    <string name="nm_data_record_empty">Wala pang laman ang record mula sa account na ito.</string>
+    <string name="nm_data_record_keep_days">Itinatago ng relay na ito ang isang turn nang %1$d araw.</string>
+    <string name="nm_data_record_keep_forever">Nananatili ito hanggang burahin mo.</string>
     <string name="nm_data_default_on">Nagsisimulang naka-on ito sa mga bagong account.</string>
     <string name="nm_data_default_off">Nagsisimulang naka-off ito sa mga bagong account.</string>
     <string name="nm_data_kept">%1$d turn na ang naitago.</string>
     <string name="nm_data_on_toast">Naka-on. I-off ito dito anumang oras.</string>
-    <string name="nm_data_off_toast">Naka-off. Wala nang itatago pa.</string>
-    <string name="nm_data_delete">Burahin ang mga itinagong usapan</string>
-    <string name="nm_data_delete_sub">Inaalis ang bawat turn na itinago mula sa account na ito, naka-on man o naka-off ang switch ngayon. Ang pag-off ng switch ay nagpapanatili ng naitago na hanggang burahin mo ito dito.</string>
-    <string name="nm_data_delete_confirm">Aalisin sa server ang mga itinagong usapan. Hindi na ito maibabalik.</string>
-    <string name="nm_data_deleted">%1$d turn ang nabura.</string>
+    <string name="nm_data_off_toast">Naka-off. Wala nang papasok pa sa training set.</string>
+    <string name="nm_data_delete">Burahin ang record at ang mga itinagong usapan</string>
+    <string name="nm_data_delete_sub">Inaalis ang record ng mga chat ng account na ito at bawat training turn na itinago mula rito, naka-on man o naka-off ang switch ngayon. Ang pag-off ng switch ay nag-iiwan ng itinago hanggang burahin mo rito.</string>
+    <string name="nm_data_delete_confirm">Aalisin sa server ang record ng mga chat mo at ang mga itinagong training turn. Hindi na ito maibabalik.</string>
+    <string name="nm_data_deleted">Binura: %1$d turn ng record, %2$d file, %3$d training turn.</string>
     <string name="nm_data_sign_in">Mag-sign in sa nanoMuse Cloud para gamitin ito.</string>
     <string name="nm_data_privacy">Patakaran sa privacy</string>
     <string name="nm_data_status_on">Naka-on</string>
@@ -1049,6 +1057,8 @@
     <string name="nm_sync_side_title">I-sync din ang mga side chat</string>
     <string name="nm_sync_side_sub">Naka-off: nananatili sa device na ito ang mga side chat. Naka-on: pupunta sa account ang mga side chat ng device na ito at darating dito ang mga side chat ng ibang device.</string>
     <string name="nm_sync_working">Ginagawa ito ng %1$s…</string>
+    <string name="nm_sync_working_step">Ginagawa ito ng %1$s: %2$s</string>
+    <string name="nm_sync_waiting">Hinihintay ka ng %1$s</string>
     <string name="nm_devices_ask">Hilingin sa device na ito</string>
     <string name="nm_devices_ask_hint">I-tap ang isang device na online para sulatan ito mula sa chat: magsisimula ang mensahe sa @ at pangalan nito, at ang device na iyon ang gagawa ng trabaho.</string>
     <string name="nm_reach_the_provider">ang provider</string>
@@ -1127,7 +1137,6 @@
     <string name="nm_cloud_provider_no_delete">Ang provider na ito ay ang iyong nanoMuse Cloud account. I-off ito sa itaas para hindi na gamitin ang mga modelo nito; para mag-sign out, buksan ang Mga Setting › nanoMuse Cloud.</string>
     <string name="nm_welcome_own_key">Gamitin na lang ang sariling API key</string>
     <string name="nm_useit_title">Gamitin ito para sa</string>
-    <string name="nm_useit_body">Piliin kung ano ang dapat asikasuhin ng key na ito. Ang iba ay nasa nanoMuse Cloud pa rin.</string>
     <string name="nm_useit_body_signed_out">Piliin kung ano ang dapat asikasuhin ng key na ito.</string>
     <string name="nm_useit_use">Gamitin</string>
     <string name="nm_useit_not_now">Hindi muna</string>
@@ -1167,4 +1176,34 @@
     <string name="nm_font_scale_medium">Katamtaman</string>
     <string name="nm_font_scale_large">Malaki</string>
     <string name="nm_font_scale_extra_large">Napakalaki</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">Mga file sa mga chat</string>
+    <string name="nm_backup_chat_files_on">Bawat attachment, offload file at workspace file ay kasama ng mga mensahe.</string>
+    <string name="nm_backup_chat_files_off">Mga mensahe lang. Nakalista ang mga file pero hindi kasama; ibabalik ng restore ang mga chat nang wala ang mga ito. Nananatiling maliit ang package para sa server na tumatanggi sa malalaking upload.</string>
+    <string name="nm_backup_hint_too_large">Tinanggihan ng server ang package dahil sa laki nito. Kadalasan ito ang upload limit ng server (nginx: client_max_body_size); taasan ito, o i-back up ang mga chat nang wala ang mga file.</string>
+    <string name="nm_backup_delivery_failed">Nabigo ang paghahatid.</string>
+    <string name="nm_backup_run_needs_passphrase">Naka-on ang encryption, at itinatype ang passphrase sa pahina ng Backup; hindi ito mahihingi ng pagtakbo mula sa shell. Simulan ang backup sa pahina, o patayin doon ang encryption.</string>
+    <string name="nm_backup_run_started">Nagsimula ang backup mula sa shell.</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">Abala ang modelo, %1$d s na ang lumipas</string>
+    <string name="nm_wait_queued">%1$d ang nauuna sa iyo, %2$d s na ang lumipas</string>
+    <string name="nm_wait_next">Ikaw na ang susunod, %1$d s na ang lumipas</string>
+    <string name="nm_fb_up">Magandang sagot</string>
+    <string name="nm_fb_down">Hindi magandang sagot</string>
+    <string name="nm_fb_why">Ano ang mali?</string>
+    <string name="nm_fb_reason_wrong">Mali</string>
+    <string name="nm_fb_reason_unhelpful">Hindi nakatulong</string>
+    <string name="nm_fb_reason_unsafe">Hindi dapat ginawa iyon</string>
+    <string name="nm_fb_reason_slow">Masyadong mabagal</string>
+    <string name="nm_fb_reason_other">Iba pa</string>
+    <string name="nm_fb_skip">Laktawan</string>
+    <string name="nm_fb_thanks">Naitala, salamat</string>
+    <string name="nm_stop_why">Bakit mo ito pinahinto?</string>
+    <string name="nm_stop_reason_wrong">Mali ang direksyon</string>
+    <string name="nm_stop_reason_slow">Masyadong mabagal</string>
+    <string name="nm_stop_reason_changed_mind">Nagbago ang isip ko</string>
+    <string name="nm_stop_reason_done">Tapos na pala</string>
+    <string name="nm_stop_reason_other">Iba pa</string>
 </resources>

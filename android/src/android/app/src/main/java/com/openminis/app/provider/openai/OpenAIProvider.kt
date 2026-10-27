@@ -173,12 +173,12 @@ class OpenAIProvider private constructor(
 
     companion object {
         /**
-         * [T-android-thinking-level-arch] Codex OAuth client version advertised
-         * in the Version / User-Agent headers. Bumped 0.142.3 → 0.144.1 to
-         * match the CLIProxyAPI/sub2api upstream (fixes a gpt-5.6-luna 404 seen
-         * on the older client). Shared constant so future bumps touch one place.
+         * nanoMuse: Keep Codex OAuth response requests and model discovery on
+         * the same compatibility version. A stale 0.144.1 response-client
+         * identifier could be rejected even when a newer model catalogue
+         * advertised the model as available.
          */
-        private const val CODEX_CLIENT_VERSION = "0.144.1"
+        internal const val CODEX_CLIENT_VERSION = "0.162.1"
 
         /**
          * [T-android-stale-conn-retry-hang] Streaming time-to-first-byte
@@ -706,8 +706,8 @@ class OpenAIProvider private constructor(
                 memBefore, serStartNs, failure = null,
             )
         }
-        // nanoMuse: OpenCode Go wants one stable id per conversation (io.github.nanomuse.net.OpenCodeSession)
-        val request = buildRequest(bodyStr, if (io.github.nanomuse.net.OpenCodeSession.wants(basePath)) derivePromptCacheKey(messages) else null)
+        // nanoMuse: OpenCode Go wants one stable id per conversation (io.github.nanomuse.net.OpenCodeSession); the relay's record takes the same id and, with it, where the call sits (io.github.nanomuse.cloud.CloudHeaders)
+        val request = buildRequest(bodyStr, if (io.github.nanomuse.net.OpenCodeSession.wants(basePath) || io.github.nanomuse.cloud.CloudHeaders.isCloud(extraHeaders)) derivePromptCacheKey(messages) else null, messages)
         val headerMap = mutableMapOf<String, String>()
         for (name in request.headers.names()) {
             headerMap[name] = request.headers[name] ?: ""
@@ -827,6 +827,7 @@ class OpenAIProvider private constructor(
                     "headerKeys=${rh.names()} openAiHeaders=${openAiHdrs.associateWith { rh[it] ?: "" }}"
             )
         }
+        io.github.nanomuse.cloud.CloudHeaders.noteResponse(response) // nanoMuse: the id the relay gave the turn, for the events about it
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: ""
             // T321: full error body — debug-only, but kept unconditional here
@@ -1281,6 +1282,7 @@ class OpenAIProvider private constructor(
                         val err = mapHttpError(code, event.toString())
                         throw err
                     }
+                    event.optJSONObject("nanomuse")?.let { io.github.nanomuse.cloud.NmStreamStatus.note(it) } // nanoMuse: the relay's "queued, N ahead" before the model speaks (docs/cloud.md)
                     val choices = event.optJSONArray("choices")
                     if (choices != null && choices.length() > 0) {
                         val choice = choices.getJSONObject(0)
@@ -2390,7 +2392,7 @@ class OpenAIProvider private constructor(
      * the OAuth byte build, and the OkHttp RequestBody. Per-call peak heap
      * dropped by ~2× the body size (often tens of MB on long agent loops).
      */
-    private suspend fun buildRequest(bodyStr: String, opencodeSession: String? = null): Request { // nanoMuse: + opencodeSession
+    private suspend fun buildRequest(bodyStr: String, conversationKey: String? = null, messages: List<LLMMessage> = emptyList()): Request { // nanoMuse: + conversationKey (OpenCode's session, the Cloud's conversation) and the messages (the Cloud's turn and step)
         val token = getToken()
 
         if (isOAuth && !forceChatCompletions) {
@@ -2459,8 +2461,11 @@ class OpenAIProvider private constructor(
         for ((key, value) in extraHeaders) {
             builder.header(key, value)
         }
-        // nanoMuse: the conversation's id for OpenCode, before the per-call overrides so those still win
-        opencodeSession?.let { builder.header(io.github.nanomuse.net.OpenCodeSession.HEADER, it) }
+        // nanoMuse: the conversation's id for OpenCode, or for the Cloud's record with where the call sits in it (run, turn, step, trajectory), before the per-call overrides so those still win
+        conversationKey?.let {
+            if (io.github.nanomuse.net.OpenCodeSession.wants(basePath)) builder.header(io.github.nanomuse.net.OpenCodeSession.HEADER, it)
+            if (io.github.nanomuse.cloud.CloudHeaders.isCloud(extraHeaders)) io.github.nanomuse.cloud.CloudHeaders.forCall(it, messages).forEach { (k, v) -> builder.header(k, v) }
+        }
         // [T-android-model-use-passthrough-mode] Per-call chat header overrides,
         // applied AFTER the ctor extraHeaders → same-name REPLACE over any
         // default (incl. Authorization/Content-Type). Empty on normal calls.
@@ -3487,6 +3492,9 @@ class OpenAIProvider private constructor(
         } catch (_: Exception) {
             "HTTP $statusCode: ${body.take(500)}"
         }
+
+        // nanoMuse: a gateway's 400 that says its own upstream gave nothing ("HTTP 0") is a blip to retry (#640)
+        if (statusCode == 400 && io.github.nanomuse.net.ModelBlip.saysUpstreamGaveNothing(message)) return LLMError.TransientError(message)
 
         val transientCodes = setOf(500, 502, 503, 504, 529)
         if (statusCode in transientCodes) {

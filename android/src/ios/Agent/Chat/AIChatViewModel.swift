@@ -3931,6 +3931,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
         isSuspended = false
         NanoMuseDeviceReply.stop(in: self) // nanoMuse: a task this chat gave another device (@device) ends there too
+        if isProcessing, let sid = sessionId { NanoMuseFeedback.shared.stopped(session: sid) } // nanoMuse: the record hears the Stop; the chat asks why, once (relay 0.31)
         if let sid = sessionId {
             SessionConcurrencyManager.shared.cancelWait(sessionId: sid)
         }
@@ -4792,7 +4793,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 activeGroupId = gid
             }
         }
-        let tools = makeAgentTools()
+        let tools = NanoMusePromptDiet.tools(makeAgentTools()) // nanoMuse: browser_use worded densely
 
         let activeModel = ProviderConfigStore.shared.entry(for: entry.id)?.model ?? selectedModel
         let skillFragment = sessionId.flatMap { SkillStore.shared.skillPromptFragment(for: $0) }

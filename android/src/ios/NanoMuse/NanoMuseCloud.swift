@@ -34,6 +34,10 @@ struct NanoMuseCloudAccount: Codable, Equatable, Sendable {
     /// nil from an older relay, from the sign-in reply, or when the account has no pool.
     var grantCny: Double? = nil
     var leftCny: Double? = nil
+    /// `contribute.record.on` of `/v1/me` (relay 0.29): the relay keeps the account's turns in
+    /// full, and turns on the person's own key are sent up to join them (NanoMuseOwnTurns).
+    /// nil until the first `/v1/me` answer, or from an older relay: nothing is sent.
+    var recordOn: Bool? = nil
 
     var remaining: Int64 { max(granted - used, 0) }
     /// The relay prices in money and this account has a pool to run out of: the Settings row
@@ -63,7 +67,7 @@ struct NanoMuseCloudAccount: Codable, Equatable, Sendable {
         return String(format: AppLocalized("%@ left"), left)
     }
 
-    init(channel: String, hint: String, granted: Int64, used: Int64, usedToday: Int64, dailyCap: Int64, checkedAt: Date, unlimited: Bool = false, id: String = "", grantCny: Double? = nil, leftCny: Double? = nil) {
+    init(channel: String, hint: String, granted: Int64, used: Int64, usedToday: Int64, dailyCap: Int64, checkedAt: Date, unlimited: Bool = false, id: String = "", grantCny: Double? = nil, leftCny: Double? = nil, recordOn: Bool? = nil) {
         self.channel = channel
         self.hint = hint
         self.granted = granted
@@ -75,9 +79,10 @@ struct NanoMuseCloudAccount: Codable, Equatable, Sendable {
         self.id = id
         self.grantCny = grantCny
         self.leftCny = leftCny
+        self.recordOn = recordOn
     }
 
-    // `unlimited` and `id` came later; an account cached by an earlier build decodes without them.
+    // `unlimited`, `id` and `recordOn` came later; an account cached by an earlier build decodes without them.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         channel = try c.decode(String.self, forKey: .channel)
@@ -91,6 +96,7 @@ struct NanoMuseCloudAccount: Codable, Equatable, Sendable {
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         grantCny = try c.decodeIfPresent(Double.self, forKey: .grantCny)
         leftCny = try c.decodeIfPresent(Double.self, forKey: .leftCny)
+        recordOn = try c.decodeIfPresent(Bool.self, forKey: .recordOn)
     }
 }
 
@@ -109,7 +115,7 @@ struct NanoMuseCloudError: LocalizedError, Sendable {
 
 @MainActor
 enum NanoMuseCloud {
-    static let defaultBase = "https://cloud.nanomuse.cn"
+    nonisolated static let defaultBase = "https://cloud.nanomuse.cn"
     static let label = "nanoMuse Cloud"
 
     private enum Keys {
@@ -237,6 +243,21 @@ enum NanoMuseCloud {
     /// The sentence for a number that cannot get a code (also `describe("phone_region")`).
     nonisolated static var phoneRegionSentence: String {
         AppLocalized("Text-message codes reach mainland-China numbers only. Use an e-mail address instead.")
+    }
+
+    // MARK: - Streams through the relay
+
+    /// How long the chat waits for the next event of a model stream before it gives the turn
+    /// up as stalled and sends it again (`AIChatViewModel+SSEStream`). The app's own figure is
+    /// 120 s. Through the relay it is 300 s: the relay holds a request while the model is busy
+    /// (a place in its queue, then the first token) and gives the provider up itself after
+    /// 180 s with an error the app shows, so a 120 s watchdog only cut the slow turns off and
+    /// put them at the back of the queue again. The desktop allows a stream the same 300 s.
+    nonisolated static func streamStallTimeout(for provider: any AgentProvider) -> TimeInterval {
+        guard let openAI = provider as? OpenAIAgentProvider,
+              let base = openAI.provider.customBaseURL.flatMap(normalizedRelay) else { return 120 }
+        let custom = UserDefaults.standard.string(forKey: Keys.base).flatMap(normalizedRelay)
+        return base == (custom ?? defaultBase) ? 300 : 120
     }
 
     /// The provider instance the relay is signed in as, if it still exists.
@@ -398,6 +419,8 @@ enum NanoMuseCloud {
         if after != before {
             await NanoMuseAccountData.shared.leave(account: before, keep: true)
             await NanoMuseAccountData.shared.enter(account: after)
+            // the profile cursors were `before`'s; `after` starts from the relay's answer
+            NanoMuseProfileSync.shared.forget()
         }
         await MainActor.run { NanoMuseHub.shared.restart() } // the new key joins the hub
         NanoMuseSync.shared.accountChanged() // C10: another account's conversations are not this one's to show or push
@@ -568,7 +591,7 @@ enum NanoMuseCloud {
     /// one more provider.
     private static func provisionDefaults(store: ProviderConfigStore, instance: ProviderInstance, models: [[String: Any]]) {
         // Contract C4: the chat opens on the model the relay recommends *for chat*
-        // (`for: ["chat"]`, deepseek-v4.1-flash), never on a hands-only one.
+        // (`recommended_for: ["chat"]`), never on a hands-only one.
         let recommendedChat = NanoMuseModelMenu.recommendedChat(models)?["id"] as? String
         let pictureIds = Set(models.filter { drawsOnly($0) }.compactMap { $0["id"] as? String })
 
@@ -605,6 +628,7 @@ enum NanoMuseCloud {
         let account = reply["account"] as? [String: Any] ?? [:]
         let tokens = reply["tokens"] as? [String: Any] ?? [:]
         let spend = reply["spend"] as? [String: Any] ?? [:]
+        let record = (reply["contribute"] as? [String: Any])?["record"] as? [String: Any]
         func int64(_ value: Any?) -> Int64 {
             if let n = value as? NSNumber { return n.int64Value }
             if let s = value as? String { return Int64(s) ?? 0 }
@@ -615,6 +639,15 @@ enum NanoMuseCloud {
             if let s = value as? String { return Double(s) }
             return nil
         }
+        func flag(_ value: Any?) -> Bool {
+            if let b = value as? Bool { return b }
+            if let n = value as? NSNumber { return n.boolValue }
+            return false
+        }
+        // the two flags are read before the initializer: inline, their `??` chains made the
+        // whole call too slow for the type checker
+        let unlimited = flag(tokens["unlimited"])
+        let recordOn: Bool? = record.map { flag($0["on"]) }
         return Account(
             channel: account["channel"] as? String ?? "",
             hint: account["hint"] as? String ?? "",
@@ -623,10 +656,11 @@ enum NanoMuseCloud {
             usedToday: int64(tokens["used_today"]),
             dailyCap: int64(tokens["daily_cap"]),
             checkedAt: Date(),
-            unlimited: (tokens["unlimited"] as? Bool) ?? ((tokens["unlimited"] as? NSNumber)?.boolValue ?? false),
+            unlimited: unlimited,
             id: account["id"] as? String ?? "",
             grantCny: money(spend["grant"]),
-            leftCny: money(spend["left"])
+            leftCny: money(spend["left"]),
+            recordOn: recordOn
         )
     }
 

@@ -20,18 +20,104 @@ export interface PendingApproval {
   summary: string
   summaryZh: string
   purpose: string
+  /** The app in front when a hands step asked (what *Always in <app>* would allow); '' for any other tool. */
+  app: string
+  /** The scheduled task whose run asked (what *Always in this task* would allow); '' outside one task's run. */
+  scheduleId: string
   status: 'pending'
   at: number
 }
 
-export type ApprovalScope = 'once' | 'conversation' | 'always'
+export type ApprovalScope = 'once' | 'schedule' | 'conversation' | 'always'
 
-/** A standing "always allow": the hands in one app (`computer_app:<app>`), given on a permission card, revocable on the Permissions page. */
+/**
+ * A standing "always allow": the hands in one app (`computer_app:<app>`), given on a permission
+ * card, revocable on the Permissions page. With `sessionId` it holds in that conversation only
+ * (*Always in this chat*); with `scheduleId` too, only in the runs that scheduled task starts
+ * there (*Always in this task*).
+ */
 export interface Grant {
   id: string
   /** `computer_app:Safari` — the kind and the app the card showed when it was given. */
   target: string
   at: number
+  /** The conversation it is limited to; absent for every conversation. */
+  sessionId?: string
+  /** That conversation's title when the grant was given, for the lists. */
+  sessionTitle?: string
+  /** The scheduled task it is limited to (with its conversation in `sessionId`); absent for any turn. */
+  scheduleId?: string
+  /** That task's title when the grant was given, for the lists. */
+  scheduleTitle?: string
+}
+
+/**
+ * The names one app goes by in the hands' head line: `微信 (WeChat)` on the whole screen,
+ * `微信 (com.tencent.xinWeChat)` in window mode, `WeChat` when the system gives no display
+ * name (the runtime writes `name (id)`, nanomuse/phone/screen.py). A grant matches on any.
+ */
+export function appNames(app: string): string[] {
+  const m = /^(.+?)\s*\(([^()]+)\)$/.exec(app.trim())
+  return (m ? [m[1]!, m[2]!] : [app.trim()]).map((n) => n.trim()).filter(Boolean)
+}
+
+/**
+ * nanoMuse's own window (the installed app, or Electron when run from source): in front when
+ * the person answers a card, and never an app the hands are granted.
+ */
+export function isOwnApp(app: string): boolean {
+  return appNames(app).some((n) => /^(nanoMuse|Electron|io\.github\.nanomuse\.desktop|com\.github\.Electron)$/i.test(n))
+}
+
+/** The name an app is shown under: its display name, without the id. */
+export function appLabel(app: string): string {
+  return appNames(app)[0] ?? app
+}
+
+/**
+ * Whether a grant lets the hands act in `app` without asking, in the conversation `sessionId`,
+ * in a turn the scheduled tasks `scheduleIds` started ([] for any other turn). A task's grant
+ * holds only when every task of the run has one: a run of two tasks is not covered by one.
+ */
+export function grantCovers(grants: readonly Grant[], app: string, sessionId: string, scheduleIds: readonly string[] = []): boolean {
+  const names = new Set(appNames(app))
+  if (names.size === 0) return false
+  const mine = grants.filter((g) => g.target.startsWith('computer_app:') && appNames(g.target.slice('computer_app:'.length)).some((n) => names.has(n)) && (!g.sessionId || g.sessionId === sessionId))
+  if (mine.some((g) => !g.scheduleId)) return true
+  return scheduleIds.length > 0 && scheduleIds.every((id) => mine.some((g) => g.scheduleId === id))
+}
+
+/**
+ * The scheduled tasks a user message starts, from the harness's reminder framing
+ * (`[SCHEDULE REMINDER]` with `schedule_id_json`, or `[SCHEDULE REMINDER BATCH]` with
+ * `reminders_json`); [] for any other text.
+ */
+export function scheduleRunIds(text: string): string[] {
+  if (text.startsWith('[SCHEDULE REMINDER BATCH]')) {
+    const line = /^reminders_json: (.+)$/m.exec(text)?.[1]
+    try {
+      const list = JSON.parse(line ?? '[]') as { schedule_id?: unknown }[]
+      return Array.isArray(list) ? [...new Set(list.map((r) => r?.schedule_id).filter((id): id is string => typeof id === 'string' && id !== ''))] : []
+    } catch {
+      return []
+    }
+  }
+  if (text.startsWith('[SCHEDULE REMINDER]')) {
+    try {
+      const id = JSON.parse(/^schedule_id_json: (.+)$/m.exec(text)?.[1] ?? '""') as unknown
+      return typeof id === 'string' && id ? [id] : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+/** The grants with one more for `app` (everywhere, in one conversation or for one task), replacing the same one given before; the newest 64 kept. */
+export function withGrant(grants: readonly Grant[], grant: Grant): Grant[] {
+  const next = grants.filter((g) => !(g.target === grant.target && (g.sessionId ?? '') === (grant.sessionId ?? '') && (g.scheduleId ?? '') === (grant.scheduleId ?? '')))
+  next.push(grant)
+  return next.slice(-64)
 }
 
 /** The app of a window title as the hands report it (`Safari — Apple` → `Safari`). */
@@ -66,6 +152,16 @@ export interface StandingGrant {
   tier: GrantTier
   /** The app, the device's name, or '' for the switch. */
   target: string
+  /** For `computer_app`: the conversation it is limited to, and its title; absent for every conversation. */
+  sessionId?: string
+  sessionTitle?: string
+  /** For `computer_app`: the scheduled task it is limited to, and its title; absent for any turn. */
+  scheduleId?: string
+  scheduleTitle?: string
+  /** That task was deleted: the grant no longer does anything and is listed for revoking. */
+  scheduleGone?: boolean
+  /** For a grant in one chat: the titles of the scheduled tasks in that chat, which it covers too. */
+  chatTasks?: string[]
   /** When it was given; 0 when the store does not say (the switch). */
   at: number
 }
@@ -73,13 +169,29 @@ export interface StandingGrant {
 export const REMOTE_CONTROL_GRANT_ID = 'remote-control'
 export const DEVICE_GRANT_PREFIX = 'device:'
 
-/** Every remembered permission as one list: the hands' grants, the trusted devices, the remote-control switch. */
-export function standingGrants(input: { grants?: readonly Grant[]; trusted?: readonly { id: string; name: string; at: number }[]; remoteControl?: boolean }): StandingGrant[] {
+/**
+ * Every remembered permission as one list: the hands' grants, the trusted devices, the
+ * remote-control switch. `goneSchedules` are the tasks the schedule service no longer has;
+ * `chatTasks` the titles of the tasks in each chat a grant is limited to, by session id.
+ */
+export function standingGrants(input: { grants?: readonly Grant[]; trusted?: readonly { id: string; name: string; at: number }[]; remoteControl?: boolean; goneSchedules?: readonly string[]; chatTasks?: Readonly<Record<string, readonly string[]>> }): StandingGrant[] {
+  const gone = new Set(input.goneSchedules ?? [])
   const out: StandingGrant[] = []
   if (input.remoteControl === true) out.push({ id: REMOTE_CONTROL_GRANT_ID, kind: 'remote_control', tier: 'highest', target: '', at: 0 })
   for (const d of input.trusted ?? []) out.push({ id: `${DEVICE_GRANT_PREFIX}${d.id}`, kind: 'device', tier: 'confirm', target: d.name || d.id, at: d.at })
-  for (const g of input.grants ?? []) out.push({ id: g.id, kind: 'computer_app', tier: 'confirm', target: g.target.replace(/^computer_app:/, ''), at: g.at })
+  for (const g of input.grants ?? []) out.push({ id: g.id, kind: 'computer_app', tier: 'confirm', target: appLabel(g.target.replace(/^computer_app:/, '')), at: g.at, ...(g.sessionId ? { sessionId: g.sessionId, sessionTitle: g.sessionTitle ?? '' } : {}), ...(g.scheduleId ? { scheduleId: g.scheduleId, scheduleTitle: g.scheduleTitle ?? '', ...(gone.has(g.scheduleId) ? { scheduleGone: true } : {}) } : {}), ...(g.sessionId && !g.scheduleId && input.chatTasks?.[g.sessionId]?.length ? { chatTasks: [...input.chatTasks[g.sessionId]!] } : {}) })
   return out
+}
+
+/**
+ * Where a remembered permission holds, which each row of the lists says: `general` everywhere
+ * (the remote-control switch, a trusted device, the hands in an app in every chat), `chat` in
+ * one conversation, `task` in one scheduled task's runs.
+ */
+export type GrantScope = 'general' | 'chat' | 'task'
+
+export function grantScope(g: { sessionId?: string; scheduleId?: string }): GrantScope {
+  return g.scheduleId ? 'task' : g.sessionId ? 'chat' : 'general'
 }
 
 /** The list by tier, highest first, newest first inside a tier; tiers with nothing in them are left out. */
@@ -133,10 +245,16 @@ export class ApprovalDesk {
   /**
    * @param changed - called when the list moves.
    * @param granted - whether a standing grant covers the request (a hands step in an app allowed with "always").
+   * @param appFor - the app a hands step would act in, for the card's *Always in <app>*; '' for any other tool.
+   * @param scheduleFor - the one scheduled task whose run is asking, for *Always in this task*; '' otherwise.
    */
   constructor(
     private readonly changed: () => void,
     private readonly granted: (req: ApprovalRequestEvent) => boolean = () => false,
+    private readonly appFor: (req: ApprovalRequestEvent) => string = () => '',
+    private readonly scheduleFor: (req: ApprovalRequestEvent) => string = () => '',
+    /** How a question was settled (relay 0.31 client events): by a standing grant, by the person (the stage or the card), or not at all. */
+    private readonly settled: (req: ApprovalRequestEvent, outcome: ApprovalOutcome, by: 'grant' | 'person' | 'cancelled', waitedMs: number) => void = () => undefined,
   ) {}
 
   list(): PendingApproval[] {
@@ -152,7 +270,10 @@ export class ApprovalDesk {
   async handle(req: ApprovalRequestEvent, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome> {
     const sessionId = req.agent.session.id
     if (this.skip.has(sessionId)) return next()
-    if (this.granted(req)) return 'allowed-once'
+    if (this.granted(req)) {
+      this.settled(req, 'allowed-once', 'grant', 0)
+      return 'allowed-once'
+    }
     const id = String(req.callId ?? `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
     const row: PendingApproval = {
       id,
@@ -161,6 +282,8 @@ export class ApprovalDesk {
       summary: String(req.displayReason?.en ?? req.reason ?? '').trim().slice(0, 400),
       summaryZh: String(req.displayReason?.zh ?? req.displayReason?.['zh-CN'] ?? '').trim().slice(0, 400),
       purpose: String(req.reason ?? '').trim().slice(0, 400),
+      app: this.appFor(req),
+      scheduleId: this.scheduleFor(req),
       status: 'pending',
       at: Date.now(),
     }
@@ -180,9 +303,12 @@ export class ApprovalDesk {
     // (one decision, both surfaces), while the asker's signal still cancels both.
     const card = cardSignal(req)
     this.changed()
+    let outcome: ApprovalOutcome = 'cancelled'
     try {
-      return await Promise.race([next(), fromStage])
+      outcome = await Promise.race([next(), fromStage])
+      return outcome
     } finally {
+      this.settled(req, outcome, outcome === 'cancelled' || outcome === 'unavailable' ? 'cancelled' : 'person', Date.now() - row.at)
       req.signal?.removeEventListener('abort', onAbort)
       if (this.pending.delete(id)) this.changed()
       if (stageAnswered) card?.abort(new Error('answered on the stage'))
@@ -564,19 +690,31 @@ export function modelFor(m: { kind: string; for?: string[] }): ('chat' | 'gui')[
   return list.length ? list : m.kind === 'chat' ? ['chat'] : []
 }
 
-/** The chat model new sessions get: `deepseek-v4.1-flash` when the account has it, else the recommended one, else the first. */
-export const DEFAULT_CHAT_MODEL = 'deepseek-v4.1-flash'
-/** The model the hands see the screen with. */
-export const DEFAULT_HANDS_MODEL = 'qwen3.8-27b'
+/** The current hosted fallback; a relay's lane-specific recommendation wins. */
+export const DEFAULT_CHAT_MODEL = 'Qwen/Qwen3.6-27B-FP8'
+/** The current hosted fallback for the hands. */
+export const DEFAULT_HANDS_MODEL = 'Qwen/Qwen3.6-27B-FP8'
+const LEGACY_CHAT_MODEL = 'deepseek-v4.1-flash'
+const LEGACY_HANDS_MODEL = 'qwen3.8-27b'
 
-export function pickChatModel<M extends { id: string; kind: string; for?: string[]; recommended?: boolean }>(models: M[]): M | undefined {
+type PickableModel = { id: string; kind: string; for?: string[]; recommended?: boolean; recommendedFor?: string[] }
+
+export function pickChatModel<M extends PickableModel>(models: M[]): M | undefined {
   const chat = models.filter((m) => modelFor(m).includes('chat'))
-  return chat.find((m) => m.id === DEFAULT_CHAT_MODEL) ?? chat.find((m) => m.recommended) ?? chat[0]
+  return chat.find((m) => m.recommendedFor?.includes('chat'))
+    ?? chat.find((m) => m.id === DEFAULT_CHAT_MODEL)
+    ?? chat.find((m) => m.id === LEGACY_CHAT_MODEL)
+    ?? chat.find((m) => m.recommended)
+    ?? chat[0]
 }
 
-export function pickHandsModel<M extends { id: string; kind: string; for?: string[]; recommended?: boolean }>(models: M[]): M | undefined {
+export function pickHandsModel<M extends PickableModel>(models: M[]): M | undefined {
   const gui = models.filter((m) => modelFor(m).includes('gui'))
-  return gui.find((m) => m.id === DEFAULT_HANDS_MODEL) ?? gui.find((m) => m.recommended) ?? gui[0]
+  return gui.find((m) => m.recommendedFor?.includes('gui'))
+    ?? gui.find((m) => m.id === DEFAULT_HANDS_MODEL)
+    ?? gui.find((m) => m.id === LEGACY_HANDS_MODEL)
+    ?? gui.find((m) => m.recommended)
+    ?? gui[0]
 }
 
 /**

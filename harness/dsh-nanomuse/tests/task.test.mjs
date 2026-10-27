@@ -5,7 +5,7 @@
 // streamed while the model writes it when the asker asked for that.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { STREAM_INTERVAL_MS, TaskRunner, frame, preview, textOf } from '../lib/task.js'
+import { STREAM_INTERVAL_MS, TaskRunner, frame, grantKey, preview, textOf } from '../lib/task.js'
 
 /** The slice of a dsh Context the runner touches. */
 function fakeContext() {
@@ -104,6 +104,10 @@ test('frame, textOf and preview', () => {
   assert.equal(preview('think', 'not json'), 'think: not json')
   assert.equal(preview('noop', '{}'), 'noop')
   assert.equal(preview('bash', JSON.stringify({ command: 'x'.repeat(300) })).length, 'bash: '.length + 160)
+  // the key a remembered answer is kept under: the whole argument, never the cut preview
+  assert.equal(grantKey('bash', JSON.stringify({ command: 'x'.repeat(300) })), `bash: ${'x'.repeat(300)}`)
+  assert.equal(grantKey('bash', '{"command":"ls   -la\\n"}'), 'bash: ls -la')
+  assert.equal(grantKey('noop', '{}'), 'noop')
 })
 
 test('a task opens a named session, streams the run and resolves with the answer', async () => {
@@ -161,18 +165,26 @@ test('an approval goes to the asker and its approve decides; stop cancels the ru
   assert.equal(asked.reason, 'destructive command')
   assert.equal(asked.device, 'Desk')
   assert.deepEqual(await r.approve({ approval_id: 'nope', allow: true }), { ok: false })
-  assert.deepEqual(await r.approve({ approval_id: asked.approval_id, allow: true }), { ok: true })
+  // another device cannot approve this run's card
+  const foreignApprove = fakeCall('a2', { id: 'phone-2', name: 'Other', kind: 'phone' })
+  assert.deepEqual(await r.approve({ approval_id: asked.approval_id, allow: true }, foreignApprove), { ok: false })
+  assert.deepEqual(await r.approve({ approval_id: asked.approval_id, allow: true }, fakeCall('a1')), { ok: true })
   assert.equal(await outcome, 'allowed-once')
   assert.deepEqual(call.events.at(-1), { stage: 'approval_result', approval_id: asked.approval_id, status: 'approved' })
 
   const denied = h.ask('session-1', { toolName: 'bash', callId: 't9' })
   await tick()
   const asked2 = call.events.filter((e) => e.stage === 'approval').at(-1)
-  await r.approve({ approval_id: asked2.approval_id, allow: false })
+  await r.approve({ approval_id: asked2.approval_id, allow: false }, fakeCall('a1'))
   assert.equal(await denied, 'rejected')
 
   // another session's approval is not ours
   assert.equal(await h.ask('session-other', { toolName: 'bash' }), 'unavailable')
+
+  // another device cannot stop this call
+  const foreignStop = fakeCall('s_other', { id: 'phone-2', name: 'Other', kind: 'phone' })
+  assert.deepEqual(await r.stop({ call: 'c1' }, foreignStop), { stopped: false })
+  assert.equal(h.agents.get('session-1').cancelled.length, 0)
 
   // stop by call id cancels the agent; the aborted turn resolves with what was said
   assert.deepEqual(await r.stop({ call: 'c1' }, fakeCall('s1')), { stopped: true })

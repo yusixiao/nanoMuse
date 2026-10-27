@@ -10,7 +10,11 @@ extension AIChatViewModel {
 
     /// Construct an AgentProvider from a ModelEntry by looking up its ProviderInstance and credential.
     func makeAgentProvider(for entry: ModelEntry) async -> AgentProvider {
-        return await Self.makeAgentProvider(for: entry)
+        // nanoMuse: every call the loop makes says which chat and turn it belongs to (NanoMuseProvenance, relay 0.31)
+        let provider = await Self.makeAgentProvider(for: entry)
+        return NanoMuseProvenance.wrap(provider) { [weak self] in
+            (session: self?.sessionId, turns: self?.messages.filter { $0.role == .user }.count ?? 0)
+        }
     }
 
     /// Static variant — used by sub-task call sites (title generation, etc.)
@@ -18,6 +22,12 @@ extension AIChatViewModel {
     /// method, since the resolution depends only on global state
     /// (ProviderConfigStore + LLMProviderFactory).
     static func makeAgentProvider(for entry: ModelEntry) async -> AgentProvider {
+        // nanoMuse: a turn answered on the person's own key joins the account's record (NanoMuseOwnTurns)
+        let bare = await makeBareAgentProvider(for: entry)
+        return NanoMuseOwnTurns.wrap(entry: entry, bare)
+    }
+
+    static func makeBareAgentProvider(for entry: ModelEntry) async -> AgentProvider { // nanoMuse: was makeAgentProvider
         let store = ProviderConfigStore.shared
         guard let instance = store.instance(for: entry.providerInstanceId) else {
             logger.error("No ProviderInstance found for entry \(entry.id)")

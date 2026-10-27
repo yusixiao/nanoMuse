@@ -31,10 +31,19 @@ def client():
         yield c
 
 
-def sign_up(client: TestClient, identifier: str) -> str:
+def sign_up(
+    client: TestClient,
+    identifier: str,
+    *,
+    device_id: str = "",
+    device_kind: str = "",
+) -> str:
     assert client.post("/v1/auth/code", json={"identifier": identifier}).status_code == 204
     _, code = client.sender.sent[-1]
-    r = client.post("/v1/auth/verify", json={"identifier": identifier, "code": code, "device": "test"})
+    body = {"identifier": identifier, "code": code, "device": "test"}
+    if device_id or device_kind:
+        body.update({"device_id": device_id, "device_kind": device_kind})
+    r = client.post("/v1/auth/verify", json=body)
     assert r.status_code == 200, r.text
     return r.json()["api_key"]
 
@@ -56,7 +65,8 @@ def connect(client: TestClient, key: str | None, **kw):
 
 def test_two_devices_route_calls_and_results(client):
     key = sign_up(client, "13800138000")
-    with connect(client, key) as phone, connect(client, key) as pc:
+    pc_key = sign_up(client, "13800138000")
+    with connect(client, key) as phone, connect(client, pc_key) as pc:
         phone.send_json(hello("phone", "phone-1", "Pixel"))
         w1 = phone.receive_json()
         assert w1["type"] == "welcome" and w1["device_id"] == "phone-1"
@@ -121,7 +131,8 @@ def test_two_devices_route_calls_and_results(client):
 
 def test_target_leaving_fails_the_pending_call(client):
     key = sign_up(client, "someone@example.com")
-    with connect(client, key) as phone, connect(client, key) as pc:
+    pc_key = sign_up(client, "someone@example.com")
+    with connect(client, key) as phone, connect(client, pc_key) as pc:
         phone.send_json(hello("phone", "phone-1", "Pixel"))
         phone.receive_json()
         phone.receive_json()
@@ -146,7 +157,8 @@ def test_a_lone_pending_call_times_out_on_the_callers_ping(client):
     from nanomuse_cloud import hub as hub_mod
 
     key = sign_up(client, "someone@example.com")
-    with connect(client, key) as phone, connect(client, key) as pc:
+    pc_key = sign_up(client, "someone@example.com")
+    with connect(client, key) as phone, connect(client, pc_key) as pc:
         phone.send_json(hello("phone", "phone-1", "Pixel"))
         phone.receive_json()
         phone.receive_json()
@@ -176,7 +188,8 @@ def test_a_lone_pending_call_times_out_on_the_callers_ping(client):
 
 def test_web_tab_authenticates_in_hello_and_cannot_be_called(client):
     key = sign_up(client, "13800138000")
-    with connect(client, None) as web, connect(client, key) as pc:
+    pc_key = sign_up(client, "13800138000")
+    with connect(client, None) as web, connect(client, pc_key) as pc:
         web.send_json(hello("web", "", "Chrome", key=key))
         w = web.receive_json()
         assert w["type"] == "welcome" and w["device_id"].startswith("web-")
@@ -334,6 +347,167 @@ def test_accounts_are_separate_and_frames_are_capped(client):
         assert pa.receive_json()["code"] == "device_offline"
         pa.send_text(json.dumps({"type": "ping", "pad": "x" * 5000}))
         assert pa.receive_json()["code"] == "too_large"
+        # the cap is in bytes on the wire: 1500 Chinese characters are 4500 bytes of UTF-8
+        pa.send_text(json.dumps({"type": "ping", "pad": "文" * 1500}, ensure_ascii=False))
+        assert pa.receive_json()["code"] == "too_large"
+        pa.send_text(json.dumps({"type": "ping", "pad": "文" * 1000}, ensure_ascii=False))
+        assert pa.receive_json()["type"] == "pong"
+
+
+def test_a_call_id_still_waiting_is_not_taken_twice(client):
+    key = sign_up(client, "13800138000")
+    pc_key = sign_up(client, "13800138000")
+    with connect(client, key) as phone, connect(client, pc_key) as pc:
+        phone.send_json(hello("phone", "phone-1", "Pixel"))
+        phone.receive_json()
+        phone.receive_json()
+        pc.send_json(hello("computer", "pc-1", "desk"))
+        pc.receive_json()
+        pc.receive_json()
+        phone.receive_json()
+        phone.send_json({"type": "call", "id": "c1", "to": "pc-1", "action": "info", "args": {}})
+        assert pc.receive_json()["id"] == "c1"
+        phone.send_json({"type": "call", "id": "c1", "to": "pc-1", "action": "shell", "args": {"command": "rm"}})
+        dup = phone.receive_json()
+        assert dup["type"] == "error" and dup["code"] == "duplicate_call" and dup["id"] == "c1"
+        # the first call is still the one waiting: its answer reaches the phone
+        pc.send_json({"type": "result", "id": "c1", "ok": True, "body": {"os": "linux"}})
+        res = phone.receive_json()
+        assert res["type"] == "result" and res["body"] == {"os": "linux"}
+        # and once it is answered the id is free again
+        phone.send_json({"type": "call", "id": "c1", "to": "pc-1", "action": "info", "args": {}})
+        assert pc.receive_json()["action"] == "info"
+
+
+def test_device_credentials_are_bound_and_older_keys_cannot_claim_them(client):
+    """A new client binds at sign-in. Its key cannot announce another installation or
+    kind, and an unbound key from an earlier sign-in (a leaked old key, say) cannot take
+    an identity a later key owns."""
+    legacy = sign_up(client, "bound@example.com")
+    a = sign_up(client, "bound@example.com", device_id="phone-a", device_kind="phone")
+    b = sign_up(client, "bound@example.com", device_id="pc-b", device_kind="computer")
+
+    for frame in (
+        hello("phone", "pc-b", "not B"),
+        hello("computer", "phone-a", "not a phone"),
+    ):
+        with connect(client, a) as ws:
+            ws.send_json(frame)
+            err = ws.receive_json()
+            assert err["type"] == "error" and err["code"] == "bad_device"
+
+    with connect(client, legacy) as ws:
+        ws.send_json(hello("computer", "pc-b", "old client"))
+        assert ws.receive_json()["code"] == "bad_device"
+
+    with connect(client, a) as phone, connect(client, b) as pc:
+        phone.send_json(hello("phone", "phone-a", "Pixel"))
+        assert phone.receive_json()["device_id"] == "phone-a"
+        phone.receive_json()
+        pc.send_json(hello("computer", "pc-b", "Desk"))
+        assert pc.receive_json()["device_id"] == "pc-b"
+
+
+def test_old_client_binds_on_first_hello_and_reconnects(client):
+    """The one-release migration path keeps an existing unbound credential working.
+    Its first accepted hello registers the id and later reconnects retain it."""
+    key = sign_up(client, "legacy@example.com")
+    for _ in range(2):
+        with connect(client, key) as ws:
+            ws.send_json(hello("computer", "legacy-pc", "Desk"))
+            assert ws.receive_json()["device_id"] == "legacy-pc"
+
+
+def test_a_later_sign_in_on_the_same_installation_takes_the_identity_over(client):
+    """A phone that signs in again without signing out (or whose sign-out never reached
+    the relay) keeps its device id: the newer code sign-in proved the account, so its key
+    takes the id from the older one, which stays a valid account key but no longer
+    speaks for the device. The older key cannot take it back."""
+    old = sign_up(client, "again@example.com")
+    with connect(client, old) as ws:
+        ws.send_json(hello("phone", "phone-same", "Pixel"))
+        assert ws.receive_json()["device_id"] == "phone-same"
+    new = sign_up(client, "again@example.com")
+    with connect(client, new) as ws:
+        ws.send_json(hello("phone", "phone-same", "Pixel"))
+        assert ws.receive_json()["device_id"] == "phone-same"
+    with connect(client, old) as ws:
+        ws.send_json(hello("phone", "phone-same", "Pixel"))
+        assert ws.receive_json()["code"] == "bad_device"
+    with connect(client, old) as ws:
+        ws.send_json(hello("phone", "phone-other", "Pixel"))
+        assert ws.receive_json()["device_id"] == "phone-other"
+    auth = {"Authorization": f"Bearer {old}"}
+    assert client.get("/v1/me", headers=auth).status_code == 200, "the older key still opens the account"
+
+
+def test_a_revoked_owner_releases_its_device_id(client):
+    """Sign out, sign in again on the same installation: the revoked key no longer holds
+    the id, and the fresh key registers it at its first hello."""
+    first = sign_up(client, "signout@example.com")
+    with connect(client, first) as ws:
+        ws.send_json(hello("computer", "pc-same", "Desk"))
+        assert ws.receive_json()["device_id"] == "pc-same"
+    assert client.post("/v1/auth/sign-out", headers={"Authorization": f"Bearer {first}"}).status_code == 204
+    second = sign_up(client, "signout@example.com")
+    with connect(client, second) as ws:
+        ws.send_json(hello("computer", "pc-same", "Desk"))
+        assert ws.receive_json()["device_id"] == "pc-same"
+
+
+def test_a_session_key_registers_a_free_identity_but_never_takes_one(client):
+    """nanoMuse Web's container runs the runtime, a `computer` of the account with an id of
+    its own: a session key binds that at its first hello like any credential. What it
+    cannot do is take over an id a standing key holds, however new the session key is."""
+    standing = sign_up(client, "web-session@example.com", device_id="pc-mine", device_kind="computer")
+    r = client.post(
+        "/v1/auth/session-key",
+        headers={"Authorization": f"Bearer {standing}"},
+        json={"device": "Web", "ttl_s": 3600},
+    )
+    assert r.status_code == 200
+    session = r.json()
+    assert set(session) == {"api_key", "expires_at"}
+    with connect(client, session["api_key"]) as ws:
+        ws.send_json(hello("computer", "pc-mine", "fake"))
+        assert ws.receive_json()["code"] == "bad_device"
+    with connect(client, session["api_key"]) as ws:
+        ws.send_json(hello("computer", "pc-container", "Web"))
+        assert ws.receive_json()["device_id"] == "pc-container"
+    with connect(client, session["api_key"]) as ws:
+        ws.send_json(hello("phone", "pc-container", "Web"))
+        assert ws.receive_json()["code"] == "bad_device"
+
+
+def test_forged_hello_cannot_settle_invite_but_spend_threshold_settles_once(client):
+    """A remembered Hub row is not proof of real use. Only cumulative successful
+    provider cost reaches the threshold, and concurrent/repeated checks pay once."""
+    inviter_key = sign_up(client, "inviter@example.com")
+    invitee_key = sign_up(client, "invitee@example.com")
+    cloud = client.app.state.cloud
+    inviter = cloud.authenticate(inviter_key).account_id
+    invitee = cloud.authenticate(invitee_key).account_id
+    cloud.db.link_invite(inviter, invitee)
+    before_inviter = int(cloud.db.account(inviter)["grant_uy"])
+    before_invitee = int(cloud.db.account(invitee)["grant_uy"])
+
+    cloud.db.charge(invitee, "chat", "test", 0, 0, 0, "tiny", cost_uy=199)
+    assert cloud.settle_invite(invitee) is False
+    with connect(client, invitee_key) as forged:
+        forged.send_json(hello("phone", "forged-phone", "forged"))
+        assert forged.receive_json()["type"] == "welcome"
+    assert cloud.settle_invite(invitee) is False
+
+    cloud.db.charge(invitee, "chat", "test", 0, 0, 0, "enough", cost_uy=1)
+    assert cloud.settle_invite(invitee) is True
+    assert cloud.settle_invite(invitee) is False
+    bonus = cloud.s.cny_to_uy(cloud.s.invite_bonus_cny)
+    assert int(cloud.db.account(inviter)["grant_uy"]) == before_inviter + bonus
+    assert int(cloud.db.account(invitee)["grant_uy"]) == before_invitee + bonus
+    credits = cloud.db._conn.execute(
+        "SELECT COUNT(*) FROM ledger WHERE kind='credit' AND json_extract(extra, '$.from') IN ('invite', 'invited')"
+    ).fetchone()[0]
+    assert credits == 2
 
 
 def test_reconnect_replaces_the_older_socket(client):
@@ -409,11 +583,12 @@ def test_the_profile_is_shared_and_announced(client):
     import base64
 
     key = sign_up(client, "13800138000")
+    pc_key = sign_up(client, "13800138000")
     auth = {"Authorization": f"Bearer {key}"}
     assert client.get("/v1/me/profile", headers=auth).json()["rev"] == 0
 
     webp = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 40).decode()
-    with connect(client, key) as phone, connect(client, key) as pc:
+    with connect(client, key) as phone, connect(client, pc_key) as pc:
         phone.send_json(hello("phone", "phone-1", "Pixel"))
         phone.receive_json(), phone.receive_json()
         pc.send_json(hello("computer", "pc-1", "desk"))
@@ -639,6 +814,10 @@ def test_connectors_are_merged_by_device_and_never_hold_a_secret(client):
         [{"id": "x", "auth": "oauth", "Authorization": "Bearer t"}],
         [{"id": "x", "auth": "open", "extra": {"password": "p"}}],
         [{"id": "x", "auth": "open", "extra": [{"client_secret": "s"}]}],
+        # the address itself: a query, a user info or a fragment is where a key rides
+        [{"id": "x", "auth": "key", "url": "https://mcp.example.net/sse?key=sk-abc"}],
+        [{"id": "x", "auth": "key", "url": "https://user:sk-abc@mcp.example.net/sse"}],
+        [{"id": "x", "auth": "key", "url": "https://mcp.example.net/sse#sk-abc"}],
     ):
         r = client.put("/v1/me/profile", headers=auth, json={"device": "desk-1", "connectors": leak})
         assert r.status_code == 400 and r.json()["error"]["code"] == "no_secrets_in_profile", leak
@@ -683,5 +862,58 @@ def test_connectors_are_merged_by_device_and_never_hold_a_secret(client):
         "style": "",
         "description": "",
         "face": None,
+        "clips": None,
         "connectors": [],
     }
+
+
+def test_too_many_sockets_are_refused_before_the_hello_is_read(client, monkeypatch):
+    """0.30: an address opening sockets faster than HELLOS_PER_MINUTE, or an account past
+    MAX_ONLINE_PER_ACCOUNT devices, is closed with 4008 `too_many_connections`; a device
+    taking its own place again is not a new one."""
+    from nanomuse_cloud import hub as hub_mod
+    from nanomuse_cloud.service import Pace
+
+    # three sign-ins of one account: a key is one installation's credential
+    pc_key, phone_key, laptop_key = (sign_up(client, "13800138000") for _ in range(3))
+    hub = client.app.state.hub
+    monkeypatch.setattr(hub_mod, "MAX_ONLINE_PER_ACCOUNT", 2)
+    with connect(client, pc_key) as first:
+        first.send_json(hello("computer", "pc-1", "desk"))
+        first.receive_json()
+        with connect(client, phone_key) as second:
+            second.send_json(hello("phone", "ph-1", "pocket"))
+            second.receive_json()
+            with connect(client, laptop_key) as third:
+                third.send_json(hello("computer", "pc-2", "laptop"))
+                err = third.receive_json()
+                assert err["type"] == "error" and err["code"] == "too_many_connections"
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    third.receive_json()
+                assert closed.value.code == 4008
+            # the first device again, under its own id: a replacement, never a third
+            with connect(client, pc_key) as again:
+                again.send_json(hello("computer", "pc-1", "desk"))
+                assert again.receive_json()["type"] == "welcome"
+    assert hub.stats()["refused_connections"] == 1
+    # the pace per address: the third socket in the window is closed with no hello read
+    hub._hellos = Pace(2, 60.0)
+    with connect(client, pc_key) as a, connect(client, phone_key) as b:
+        a.send_json(hello("computer", "pc-1", "desk"))
+        b.send_json(hello("phone", "ph-1", "pocket"))
+        assert a.receive_json()["type"] == "welcome" and b.receive_json()["type"] == "welcome"
+        with connect(client, laptop_key) as c:
+            with pytest.raises(WebSocketDisconnect) as closed:
+                c.receive_json()
+            assert closed.value.code == 4008
+    assert hub.stats()["refused_connections"] == 2
+
+
+def test_session_keys_are_paced(client):
+    from nanomuse_cloud.service import Cloud
+
+    key = sign_up(client, "13800138001")
+    for _ in range(Cloud.SESSION_KEYS_PER_HOUR):
+        assert client.post("/v1/auth/session-key", headers={"Authorization": f"Bearer {key}"}, json={"device": "web"}).status_code == 200
+    r = client.post("/v1/auth/session-key", headers={"Authorization": f"Bearer {key}"}, json={"device": "web"})
+    assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"

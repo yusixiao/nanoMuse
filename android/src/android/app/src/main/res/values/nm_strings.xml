@@ -132,6 +132,9 @@
     <string name="nm_routine_paused">Off</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">Routine · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">Add another time</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">Scheduled for %1$s</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">Ideas</string>
@@ -818,16 +821,21 @@
     <string name="nm_cloud_ev_contribute_default">Data controls: on for new accounts</string>
     <string name="nm_data_title">Data controls</string>
     <string name="nm_data_improve">Help improve nanoMuse\'s AI models</string>
-    <string name="nm_data_why">While this is on, the text of your chats with the nanoMuse Cloud models (what you wrote, what it answered and the tools it chose to call) is kept on the relay to train the community\'s own open model. Not your memory or SOUL (the system prompt), not what tools returned, not pictures, and never next to who you are. Your own API key never passes through the relay.</string>
+    <string name="nm_data_why">While this is on, the text of those chats (what you wrote, what the model answered and the tools it chose to call) also joins the training set for the community\'s own open model: without your memory or SOUL (the system prompt), what tools returned, pictures, or who you are. Off, nothing more joins it; the record itself stays until you delete it. Turns on a key of your own are in the record, never in the training set.</string>
+    <string name="nm_data_record_why">nanoMuse Cloud keeps every turn of your chats with its models in full as your account\'s record: what went to the model, what it answered, the tools and what they returned, the pictures as files. From the 1.0.7 app on, turns answered on your own key join it too. It is your data: only your devices and whoever runs the relay can read it.</string>
+    <string name="nm_data_record_held">The record holds %1$d turns of this account (%2$d run on your own keys), with %3$d pictures.</string>
+    <string name="nm_data_record_empty">The record holds nothing of this account yet.</string>
+    <string name="nm_data_record_keep_days">This relay keeps a turn for %1$d days.</string>
+    <string name="nm_data_record_keep_forever">It stays until you delete it.</string>
     <string name="nm_data_default_on">New accounts start with it on.</string>
     <string name="nm_data_default_off">New accounts start with it off.</string>
     <string name="nm_data_kept">%1$d turns kept so far.</string>
     <string name="nm_data_on_toast">On. Turn it off here at any time.</string>
-    <string name="nm_data_off_toast">Off. Nothing more is kept.</string>
-    <string name="nm_data_delete">Delete the kept conversations</string>
-    <string name="nm_data_delete_sub">Removes every turn kept from this account, whether the switch is on or off now. Turning the switch off keeps what was kept until you delete it here.</string>
-    <string name="nm_data_delete_confirm">The kept conversations are removed from the server. This cannot be undone.</string>
-    <string name="nm_data_deleted">%1$d turns deleted.</string>
+    <string name="nm_data_off_toast">Off. Nothing more joins the training set.</string>
+    <string name="nm_data_delete">Delete the record and the kept conversations</string>
+    <string name="nm_data_delete_sub">Removes the record of this account\'s chats and every training turn kept from it, whether the switch is on or off now. Turning the switch off keeps what was kept until you delete it here.</string>
+    <string name="nm_data_delete_confirm">The record of your chats and the kept training turns are removed from the server. This cannot be undone.</string>
+    <string name="nm_data_deleted">Deleted: %1$d turns of the record, %2$d files, %3$d training turns.</string>
     <string name="nm_data_sign_in">Sign in to nanoMuse Cloud to use it.</string>
     <string name="nm_data_privacy">Privacy policy</string>
     <string name="nm_data_status_on">On</string>
@@ -1028,6 +1036,8 @@
     <string name="nm_sync_side_title">Also sync side chats</string>
     <string name="nm_sync_side_sub">Off: side chats stay on this device. On: this device\'s side chats go to the account and the other devices\' side chats come here.</string>
     <string name="nm_sync_working">%1$s is working…</string>
+    <string name="nm_sync_working_step">%1$s is working: %2$s</string>
+    <string name="nm_sync_waiting">%1$s is waiting for you</string>
     <string name="nm_devices_ask">Ask this device</string>
     <string name="nm_devices_ask_hint">Tap a device that is online to write to it from the chat: the message starts with @ and its name, and that device does the work.</string>
     <string name="nm_reach_the_provider">the provider</string>
@@ -1106,7 +1116,6 @@
     <string name="nm_cloud_provider_no_delete">This provider is your nanoMuse Cloud account. Switch it off above to stop using its models; to sign out, open Settings › nanoMuse Cloud.</string>
     <string name="nm_welcome_own_key">Use your own API key instead</string>
     <string name="nm_useit_title">Use it for</string>
-    <string name="nm_useit_body">Pick what this key should handle. nanoMuse Cloud keeps the rest.</string>
     <string name="nm_useit_body_signed_out">Pick what this key should handle.</string>
     <string name="nm_useit_use">Use it</string>
     <string name="nm_useit_not_now">Not now</string>
@@ -1146,4 +1155,35 @@
     <string name="nm_font_scale_medium">Medium</string>
     <string name="nm_font_scale_large">Large</string>
     <string name="nm_font_scale_extra_large">XL</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">Files in the chats</string>
+    <string name="nm_backup_chat_files_on">Every attachment, offload and workspace file travels with the messages.</string>
+    <string name="nm_backup_chat_files_off">Messages only. The files are listed, not carried; a restore brings the chats back without them. Keeps the package small for a server that refuses large uploads.</string>
+    <string name="nm_backup_hint_too_large">The server refused the package for its size. Most often that is its upload limit (nginx: client_max_body_size); raise it, or back up the chats without their files.</string>
+    <string name="nm_backup_delivery_failed">Delivery failed.</string>
+    <string name="nm_backup_run_needs_passphrase">Encryption is on, and the passphrase is typed on the Backup page; a run from the shell cannot ask for it. Start the backup on the page, or turn encryption off there.</string>
+    <string name="nm_backup_run_started">Backup started from the shell.</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">The model is busy, %1$d s so far</string>
+    <string name="nm_wait_queued">%1$d ahead of you, %2$d s so far</string>
+    <string name="nm_wait_next">You are next, %1$d s so far</string>
+    <!-- The lightest feedback (relay 0.31): two thumbs under a reply, one question after a Stop; codes travel, never the words -->
+    <string name="nm_fb_up">Good reply</string>
+    <string name="nm_fb_down">Not a good reply</string>
+    <string name="nm_fb_why">What was wrong?</string>
+    <string name="nm_fb_reason_wrong">Wrong</string>
+    <string name="nm_fb_reason_unhelpful">Not helpful</string>
+    <string name="nm_fb_reason_unsafe">Should not have done that</string>
+    <string name="nm_fb_reason_slow">Too slow</string>
+    <string name="nm_fb_reason_other">Something else</string>
+    <string name="nm_fb_skip">Skip</string>
+    <string name="nm_fb_thanks">Noted, thanks</string>
+    <string name="nm_stop_why">Why did you stop it?</string>
+    <string name="nm_stop_reason_wrong">It was going wrong</string>
+    <string name="nm_stop_reason_slow">Too slow</string>
+    <string name="nm_stop_reason_changed_mind">Changed my mind</string>
+    <string name="nm_stop_reason_done">It was already done</string>
+    <string name="nm_stop_reason_other">Something else</string>
 </resources>

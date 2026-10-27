@@ -129,6 +129,9 @@
     <string name="nm_routine_paused">オフ</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">ルーティン · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">時刻を追加</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">%1$s に予定</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">アイデア</string>
@@ -830,16 +833,21 @@
     <string name="nm_cloud_ev_contribute_default">データ管理: 新規アカウントではオン</string>
     <string name="nm_data_title">データ管理</string>
     <string name="nm_data_improve">nanoMuse の AI モデルの改善に協力する</string>
-    <string name="nm_data_why">オンの間、nanoMuse Cloud のモデルとのチャットのテキスト（あなたが書いたこと、モデルの答え、モデルが呼ぶことにしたツール）がリレーに保持され、コミュニティ自身のオープンモデルの学習に使われます。メモリや SOUL（システムプロンプト）、ツールが返した内容、画像は含まれず、あなたが誰かと結び付けられることもありません。自分の API キーがリレーを通ることはありません。</string>
+    <string name="nm_data_why">オンの間、これらのチャットのテキスト（あなたが書いたこと、モデルの答え、モデルが呼ぶことにしたツール）は、コミュニティ自身のオープンモデルの学習データにも入ります。メモリや SOUL（システムプロンプト）、ツールが返した内容、画像、あなたが誰かは含みません。オフにすると以後は入りません。記録そのものは削除するまで残ります。自分のキーでのターンは記録に入り、学習データには決して入りません。</string>
+    <string name="nm_data_record_why">nanoMuse Cloud は、そのモデルとのチャットの各ターンをまるごと、あなたのアカウントの記録として保持します。モデルに送られた内容、モデルの答え、ツールとツールが返した内容、画像はファイルとして保持します。1.0.7 以降のアプリでは、自分のキーで答えたターンも加わります。これはあなたのデータで、読めるのはあなたの端末とリレーを運用する人だけです。</string>
+    <string name="nm_data_record_held">記録にはこのアカウントの %1$d ターン（うち %2$d ターンは自分のキー）、画像 %3$d 枚があります。</string>
+    <string name="nm_data_record_empty">記録にはこのアカウントの内容がまだありません。</string>
+    <string name="nm_data_record_keep_days">このリレーはターンを %1$d 日間保持します。</string>
+    <string name="nm_data_record_keep_forever">削除するまで残ります。</string>
     <string name="nm_data_default_on">新規アカウントではオンで始まります。</string>
     <string name="nm_data_default_off">新規アカウントではオフで始まります。</string>
     <string name="nm_data_kept">これまでに %1$d ターンを保持。</string>
     <string name="nm_data_on_toast">オンにしました。いつでもここでオフにできます。</string>
-    <string name="nm_data_off_toast">オフにしました。これ以上は保持されません。</string>
-    <string name="nm_data_delete">保持している会話を削除</string>
-    <string name="nm_data_delete_sub">スイッチのオン・オフにかかわらず、このアカウントから保持したすべてのターンを削除します。スイッチをオフにしても、ここで削除するまで保持済みのものは残ります。</string>
-    <string name="nm_data_delete_confirm">保持している会話がサーバーから削除されます。元に戻せません。</string>
-    <string name="nm_data_deleted">%1$d ターンを削除しました。</string>
+    <string name="nm_data_off_toast">オフ。以後は学習データに入りません。</string>
+    <string name="nm_data_delete">記録と保持している会話を削除</string>
+    <string name="nm_data_delete_sub">このアカウントのチャットの記録と、保持しているすべての学習ターンを削除します。スイッチが今オンかオフかは関係ありません。スイッチをオフにしただけでは、ここで削除するまで保持されたままです。</string>
+    <string name="nm_data_delete_confirm">チャットの記録と保持している学習ターンがサーバーから削除されます。元に戻せません。</string>
+    <string name="nm_data_deleted">削除しました：記録 %1$d ターン、ファイル %2$d 件、学習ターン %3$d ターン。</string>
     <string name="nm_data_sign_in">使うには nanoMuse Cloud にサインインしてください。</string>
     <string name="nm_data_privacy">プライバシーポリシー</string>
     <string name="nm_data_status_on">オン</string>
@@ -1045,6 +1053,8 @@
     <string name="nm_sync_side_title">サイドチャットも同期する</string>
     <string name="nm_sync_side_sub">オフ: サイドチャットはこの端末だけに残ります。オン: この端末のサイドチャットがアカウントに上がり、ほかの端末のサイドチャットもここに届きます。</string>
     <string name="nm_sync_working">%1$s が作業中…</string>
+    <string name="nm_sync_working_step">%1$s が作業中：%2$s</string>
+    <string name="nm_sync_waiting">%1$s があなたの確認を待っています</string>
     <string name="nm_devices_ask">このデバイスに頼む</string>
     <string name="nm_devices_ask_hint">オンラインのデバイスをタップすると、チャットからそのデバイスに書けます: メッセージは @ とその名前で始まり、そのデバイスが作業します。</string>
     <string name="nm_reach_the_provider">プロバイダー</string>
@@ -1123,7 +1133,6 @@
     <string name="nm_cloud_provider_no_delete">このプロバイダーは nanoMuse Cloud のアカウントそのものです。モデルを使わないようにするには上のスイッチをオフにし、サインアウトするには「設定 › nanoMuse Cloud」を開いてください。</string>
     <string name="nm_welcome_own_key">自分の API キーを使う</string>
     <string name="nm_useit_title">何に使うか</string>
-    <string name="nm_useit_body">このキーに任せることを選んでください。残りは引き続き nanoMuse Cloud が担当します。</string>
     <string name="nm_useit_body_signed_out">このキーに任せることを選んでください。</string>
     <string name="nm_useit_use">使う</string>
     <string name="nm_useit_not_now">今はしない</string>
@@ -1163,4 +1172,34 @@
     <string name="nm_font_scale_medium">中</string>
     <string name="nm_font_scale_large">大きい</string>
     <string name="nm_font_scale_extra_large">とても大きい</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">チャット内のファイル</string>
+    <string name="nm_backup_chat_files_on">添付ファイル、オフロード、ワークスペースのファイルもメッセージと一緒に保存します。</string>
+    <string name="nm_backup_chat_files_off">メッセージのみ。ファイルは一覧に残りますが中身は含まれず、復元してもチャットだけが戻ります。大きなアップロードを拒否するサーバー向けにパッケージが小さくなります。</string>
+    <string name="nm_backup_hint_too_large">サーバーがサイズを理由にパッケージを拒否しました。多くはサーバーのアップロード上限（nginx の client_max_body_size）です。上限を上げるか、チャットをファイルなしでバックアップしてください。</string>
+    <string name="nm_backup_delivery_failed">送信に失敗しました。</string>
+    <string name="nm_backup_run_needs_passphrase">暗号化がオンで、パスフレーズはバックアップ画面で入力するものです。シェルからの実行では尋ねられません。画面からバックアップを開始するか、そこで暗号化をオフにしてください。</string>
+    <string name="nm_backup_run_started">シェルからバックアップを開始しました。</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">モデルが混み合っています。%1$d 秒経過</string>
+    <string name="nm_wait_queued">前に %1$d 件、%2$d 秒経過</string>
+    <string name="nm_wait_next">次はあなたの番です。%1$d 秒経過</string>
+    <string name="nm_fb_up">良い返答</string>
+    <string name="nm_fb_down">良くない返答</string>
+    <string name="nm_fb_why">何が問題でしたか？</string>
+    <string name="nm_fb_reason_wrong">間違っている</string>
+    <string name="nm_fb_reason_unhelpful">役に立たなかった</string>
+    <string name="nm_fb_reason_unsafe">すべきではなかった</string>
+    <string name="nm_fb_reason_slow">遅すぎる</string>
+    <string name="nm_fb_reason_other">その他</string>
+    <string name="nm_fb_skip">スキップ</string>
+    <string name="nm_fb_thanks">受け取りました。ありがとうございます</string>
+    <string name="nm_stop_why">なぜ止めましたか？</string>
+    <string name="nm_stop_reason_wrong">方向が違っていた</string>
+    <string name="nm_stop_reason_slow">遅すぎた</string>
+    <string name="nm_stop_reason_changed_mind">気が変わった</string>
+    <string name="nm_stop_reason_done">もう終わっていた</string>
+    <string name="nm_stop_reason_other">その他</string>
 </resources>

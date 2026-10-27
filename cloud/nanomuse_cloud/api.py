@@ -3,8 +3,8 @@
     GET  /healthz                                               → {ok, version, models, paused}
     GET  /v1/config                                             → the public figures the apps print (allowance, bonus, links, code_ttl_s, password_min_len); a minute's cache
     POST /v1/auth/code        {identifier}                      → 204 (400 phone_region: a number the SMS sender cannot reach; a disabled account gets the same 204 and no code is sent; 429 domain_limited: a new address of a domain at its day's sign-up limit)
-    POST /v1/auth/verify      {identifier, code, device, invite?} → {api_key, base_url, account, tokens, models}
-    POST /v1/auth/login       {identifier, password, device}    → the same, for accounts that set a password
+    POST /v1/auth/verify      {identifier, code, device, invite?, device_id?, device_kind?} → {api_key, base_url, account, tokens, models}
+    POST /v1/auth/login       {identifier, password, device, device_id?, device_kind?} → the same, for accounts that set a password
     POST /v1/auth/password    {password, current?}              → 204 (set / change; "" + current removes)
     GET  /v1/me                                                 → account, tokens, spend (¥ spent / pool / left), invite, contribute, usage by kind, models, recent, nudges
     GET  /v1/nudges                                             → when the apps may ask for a star (0.18; public, cached an hour; the operator's policy over the defaults)
@@ -14,12 +14,18 @@
     DELETE /v1/me/sessions/{prefix}                             → 204 (sign one device out)
     GET  /v1/me/events                                          → the account's own timeline (sign-ins, password changes…)
     POST /v1/me/contribute {on}                                 → Data controls: "help improve nanoMuse's AI models" — keep the text of my chat turns (the default for new accounts is IMPROVE_DEFAULT)
-    DELETE /v1/me/samples                                       → delete every turn kept from me
+    DELETE /v1/me/samples                                       → delete every turn kept from me: the training turns and (0.29) the record, files included → {deleted, turns, files}
+    GET  /v1/turns            ?since=&limit=&before=&before_id=&conversation= → 0.29: the account's record — every turn in full, newest first (pictures as blob:sha256 references)
+    GET  /v1/turns/{id}                                         → one turn
+    POST /v1/turns            {model, messages, response{message, usage?}, provider?, ts?, conversation?, id?, run?, turn?, step?, trajectory?, trajectory_step?, platform?} → 201 {id, ts}: a turn run on the app's own key, kept beside the Cloud ones (and, with the switch on, in the training view)
+    POST /v1/events           {events: [{kind, ts?, turn?, conversation?, data}]} → 202 {kept}: 0.31, what happened in the app around a turn — the Sentinel's decision, an approval's result, a stopped reply's reason, a thumb; codes only, never a message
+    PUT  /v1/blobs/{sha256}   raw body + Content-Type           → {sha256, bytes, mime, known}: a picture, audio or clip, stored once by its hash (HEAD first saves the upload)
+    HEAD /v1/blobs/{sha256}  /  GET /v1/blobs/{sha256}          → the file, for an account that holds a reference to it (a turn, the profile's clips, an upload of its own)
     GET  /v1/sync/state                                         → 0.19: {enabled, cursor, counts, limits, working[]} — conversation sync between the account's devices
     PUT  /v1/sync/state       {enabled}                         → the switch; off deletes everything stored
     GET  /v1/sync/changes     ?since=&limit=&scope=&tail=       → conversations and messages after a cursor, in seq order (0.20: scope=all|main, tail=K with since=0)
     POST /v1/sync/changes     {device, conversations, messages} → {cursor, accepted, rejected}; the other devices hear a hub `sync` frame
-    POST /v1/sync/working     {cid, working, device?}           → 0.20: 204; the other devices hear a hub `working` frame (presence, kept 10 min in memory)
+    POST /v1/sync/working     {cid, working, device?, state?, detail?} → 0.20: 204; the other devices hear a hub `working` frame (presence, kept 10 min in memory; 0.31: state and step ride along)
     DELETE /v1/sync/changes                                     → the store emptied, the switch kept
     DELETE /v1/sync/conversations/{cid}                         → one chat tombstoned everywhere
     POST /v1/auth/sign-out                                      → 204 (revokes this key)
@@ -27,7 +33,7 @@
     POST /v1/auth/session-key {device?, ttl_s?}                 → {api_key, expires_at} (a key that lapses on its own; nanoMuse Web's containers)
     POST /v1/auth/delete                                        → 204 (the whole account, every key)
     GET  /v1/me/profile       ?face=false                       → the agent's name, look and connectors, shared by the account's devices
-    PUT  /v1/me/profile       {device, name?, avatar?, face?, connectors?} → {rev, device}; partial since 0.25
+    PUT  /v1/me/profile       {device, name?, avatar?, face?, clips?, connectors?} → {rev, device}; partial since 0.25; clips (0.29) name files put up with PUT /v1/blobs
     DELETE /v1/me/profile                                       → 204
     GET  /v1/models                                             → OpenAI list, with modalities; for a member, the usable models under the operator's key after the menu (catalog: true)
     GET  /v1/models/{id}      ?kind=chat                        → one model, or a member's typed id checked (listed, priced_as)
@@ -66,13 +72,29 @@
     GET  /v1/admin/demo       X-Admin-Token  ?days=30           → the phone in the browser: visitors with addresses and browsers, every demo and what it used (WEB_ADMIN_URL)
     GET  /v1/admin/data       X-Admin-Token  ?days=30           → Data controls: accounts with the switch on, kept turns by day / model / app / account, switches on and off, the newest turns
     GET  /v1/admin/samples    X-Admin-Token  ?account_id=&limit=&since=&before=&before_id= → kept turns (accounts with the switch on only)
-    GET  /v1/admin/samples/export X-Admin-Token ?since=&account_id= → the same as JSON lines, without account ids or addresses
+    GET  /v1/admin/samples/export X-Admin-Token ?since=&account_id= → the same as JSON lines, without account ids or addresses (each line carries the account's pseudonym, `subject`)
+    GET  /v1/admin/turns      X-Admin-Token  ?account_id=&limit=&since=&before=&before_id=&conversation= → 0.29: the record, whole turns, newest first
+    GET  /v1/admin/turns/export X-Admin-Token ?since=&account_id= → the record as JSON lines (account ids included: it is the account's data, not the training set)
+    GET  /v1/admin/record     X-Admin-Token  ?days=30           → what the record holds: turns and files in all and per day, the store against MEDIA_MAX_GB
+    GET  /v1/admin/blobs/{sha256} X-Admin-Token                 → one file of the record
+    GET  /v1/admin/client-events X-Admin-Token ?account_id=&kind=&since=&limit=&before= → 0.31: what the apps reported around turns, newest first
+    GET  /v1/admin/client-events/export X-Admin-Token ?since=&account_id= → the same as JSON lines, with the `subject` pseudonym and no account id
+    GET  /v1/admin/client-events/summary X-Admin-Token ?days=30 → by day and kind: how many, from how many accounts; the Sentinel's and the thumbs' figures
+    GET  /v1/admin/deletions  X-Admin-Token  ?since=            → 0.31: the deletions ledger — the `subject` of every account that deleted its data or itself since, to drop from a training set built earlier
     GET  /v1/admin/sync       X-Admin-Token                     → conversation sync in aggregate: accounts on / off, conversations, messages, bytes (never a text)
     GET  /v1/admin/health     X-Admin-Token                     → aggregates only: requests under way, the hub, the last hour, the database, problems (what selfcheck.sh reads)
     GET  /v1/admin/places     X-Admin-Token  ?days=30           → accounts, sign-ins, requests and demo visitors by country and province
     GET  /v1/admin/catalog    X-Admin-Token                     → the provider's models under the operator's key and what the probes found
     GET  /v1/admin/github     X-Admin-Token  ?days=30           → stars, forks, watchers, issues, release downloads by day;  POST …/github/refresh reads now
     GET  /v1/admin/stats      X-Admin-Token  ?days=30           → every figure of the Stats page;  GET …/stats/{id} one figure, …/stats/{id}.csv as CSV
+    GET  /v1/admin/live       X-Admin-Token                     → 0.28: the model endpoint now — the provider gate, requests under way, the last hour by minute, latency percentiles, the newest calls
+    GET  /v1/admin/analytics/usage     X-Admin-Token ?days=30   → 0.28: requests, tokens, money and accounts per local day and model (the matrix)
+    GET  /v1/admin/analytics/day       X-Admin-Token ?day=<ts>  → one local day: by hour and model, by platform, how the calls went and how long they took, the errors' reasons, the top accounts
+    GET  /v1/admin/analytics/platforms X-Admin-Token ?days=30   → the apps side by side: requests, accounts, money, latency, screen operation, versions, devices, reported own models
+    GET  /v1/admin/analytics/cohorts   X-Admin-Token ?days=14   → the free pool and what came after it, who runs a key of their own, weekly retention
+    GET  /v1/admin/analytics/hands     X-Admin-Token ?days=30   → screen operation: turns and accounts by day and platform, the tools called, operable devices
+    GET  /v1/admin/analytics/quality   X-Admin-Token ?days=30   → the kept turns' shape and quality: trivial and repeated shares, accounts scored and tiered (never a text)
+    GET  /v1/admin/analytics/abuse     X-Admin-Token ?days=30   → clients that are not the apps: user-agent families, sign-ins by client, the heaviest such accounts, shared addresses
     GET  /v1/admin/settings   X-Admin-Token                     → the runtime settings in force (0.15);  POST …/settings {allowance_cny?, invite_bonus_cny?, signup_open?} sets them
     POST /v1/admin/allowance/apply X-Admin-Token                → the raised allowance reaches the accounts below it
     POST /v1/admin/credit-all X-Admin-Token  {cny, note?}       → the same credit into every limited pool
@@ -94,12 +116,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import math
+import os
 import secrets
+import tempfile
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -108,12 +134,24 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, Request, Response, UploadFile, WebSocket
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
-from . import __version__
+from . import __version__, provenance
 from . import client as client_info
+from .analytics import (
+    Analytics,
+    InFlightCall,
+    LiveMeter,
+    delta_tool_names,
+    is_hands_tool,
+    join_tool_names,
+    reply_tool_names,
+    request_shape,
+)
 from .catalog import Catalog
 from .config import ModelSpec, Settings
 from .controls import ControlError
@@ -121,6 +159,7 @@ from .geo import Geo, collect_ips, group_places
 from .github_stats import GitHubCollector
 from .hub import Hub
 from .identifiers import BadIdentifier, parse
+from .record import StreamAssembler, is_sha256
 from .service import Caller, Cloud, CloudError, Usage, dumps, estimate_tokens, prompt_chars, usage_from_json
 from .stats import Stats, api_group
 from .sync import DEFAULT_PAGE, SyncStore
@@ -129,32 +168,132 @@ log = logging.getLogger("nanomuse_cloud.api")
 
 
 class UpstreamGate:
-    """A process-wide provider slot limit with aggregate-only health figures."""
+    """A process-wide provider slot limit, first come first served, with aggregate-only
+    health figures. A request takes a `GateTicket` and waits for its slot in steps, so a
+    stream can tell the app how many are ahead of it and keep the connection warm while it
+    waits (0.31); `slot()` is the same wait in one piece."""
 
     def __init__(self, limit: int):
         self.limit = max(0, limit)
-        self._semaphore = asyncio.Semaphore(self.limit) if self.limit else None
         self.active = 0
-        self.waiting = 0
+        self._queue: deque[asyncio.Future[None]] = deque()
+
+    @property
+    def waiting(self) -> int:
+        return len(self._queue)
+
+    def ticket(self) -> GateTicket:
+        return GateTicket(self)
+
+    def _hand_out(self) -> None:
+        """Free slots to the queue's head; a waiter that left (its future cancelled) is skipped."""
+        while self._queue and self.active < self.limit:
+            fut = self._queue.popleft()
+            if not fut.done():
+                self.active += 1
+                fut.set_result(None)
 
     @asynccontextmanager
     async def slot(self) -> AsyncIterator[None]:
-        if self._semaphore is not None:
-            self.waiting += 1
-            try:
-                await self._semaphore.acquire()
-            finally:
-                self.waiting -= 1
-        self.active += 1
+        ticket = self.ticket()
         try:
+            await ticket.acquire(None)
             yield
         finally:
-            self.active -= 1
-            if self._semaphore is not None:
-                self._semaphore.release()
+            ticket.release()
 
     def snapshot(self) -> dict[str, int]:
         return {"active": self.active, "waiting": self.waiting, "limit": self.limit}
+
+
+class GateTicket:
+    """One request's place at the gate: `acquire(timeout)` answers whether the slot is held
+    yet and keeps the place in the queue across calls; `ahead` is how many wait in front;
+    `release()` gives the slot back, or the place, whichever the ticket has."""
+
+    def __init__(self, gate: UpstreamGate):
+        self.gate = gate
+        self.held = False
+        self._fut: asyncio.Future[None] | None = None
+
+    @property
+    def ahead(self) -> int:
+        if self._fut is None or self._fut.done():
+            return 0
+        try:
+            return self.gate._queue.index(self._fut)
+        except ValueError:
+            return 0
+
+    async def acquire(self, timeout: float | None) -> bool:
+        if self.held:
+            return True
+        gate = self.gate
+        if self._fut is None:
+            if not gate.limit or (gate.active < gate.limit and not gate._queue):
+                gate.active += 1
+                self.held = True
+                return True
+            self._fut = asyncio.get_running_loop().create_future()
+            gate._queue.append(self._fut)
+        try:
+            # shielded: a timeout here must not cancel the place in the queue
+            await asyncio.wait_for(asyncio.shield(self._fut), timeout)
+        except TimeoutError:
+            return False
+        self.held = True
+        return True
+
+    def release(self) -> None:
+        gate = self.gate
+        fut, self._fut = self._fut, None
+        if self.held:
+            self.held = False
+            gate.active -= 1
+            gate._hand_out()
+        elif fut is not None:
+            if fut.done() and not fut.cancelled():
+                # granted after the waiter stopped waiting: the slot goes to the next in line
+                gate.active -= 1
+                gate._hand_out()
+            else:
+                try:
+                    gate._queue.remove(fut)
+                except ValueError:
+                    pass
+                fut.cancel()
+
+
+#: how often a stream waiting for a provider slot says where it stands (and keeps warm)
+STATUS_TICK = 5.0
+#: how often a stream waiting for the provider's first bytes sends a comment line
+KEEPALIVE_TICK = 10.0
+
+
+def status_chunk(model: str, phase: str, started: float, *, ahead: int | None = None) -> bytes:
+    """A chat chunk with no choices and a `nanomuse` field: where the turn stands before the
+    model has said anything (0.31). `queued` carries how many requests are ahead at the
+    relay's gate; `working` says the slot is taken and the model is being waited for.
+    Parsers that know nothing of it see an empty chunk, as a usage-only chunk is."""
+    status: dict[str, Any] = {"phase": phase, "waited_ms": max(0, int((time.monotonic() - started) * 1000))}
+    if ahead is not None:
+        status["ahead"] = ahead
+    chunk = {"object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [], "nanomuse": status}
+    return f"data: {dumps(chunk)}\n\n".encode()
+
+
+async def _prepend(head: str | None, rest: AsyncIterator[str]) -> AsyncIterator[str]:
+    """The line already taken from an iterator, then the iterator."""
+    if head is not None:
+        yield head
+    async for line in rest:
+        yield line
+
+
+def _broken_status(e: httpx.HTTPError) -> str:
+    """How a transport failure is kept in `calls`: a timeout of any kind apart from the rest
+    (a connection refused, a stream cut), since the two point at different remedies."""
+    return "upstream_timeout" if isinstance(e, httpx.TimeoutException) else "broken"
 
 
 def error_response(status: int, code: str, message: str, extra: dict | None = None) -> JSONResponse:
@@ -167,11 +306,15 @@ def error_response(status: int, code: str, message: str, extra: dict | None = No
 
 def thinking_requested(body: dict) -> bool | None:
     """What a chat request says about reasoning, in any of the dialects the apps speak:
-    True when it asks for it (`enable_thinking: true`, `thinking: {"type": "enabled"}`, a
-    `reasoning_effort` other than `none`, a `thinking_budget`), False when it declines, None
-    when it says nothing."""
+    True when it asks for it (`enable_thinking: true`,
+    `chat_template_kwargs.enable_thinking: true`, `thinking: {"type": "enabled"}`, a
+    `reasoning_effort` other than `none`, a `thinking_budget`), False when it declines,
+    None when it says nothing."""
     if "enable_thinking" in body:
         return bool(body["enable_thinking"])
+    template = body.get("chat_template_kwargs")
+    if isinstance(template, dict) and "enable_thinking" in template:
+        return bool(template["enable_thinking"])
     thinking = body.get("thinking")
     if isinstance(thinking, bool):
         return thinking
@@ -186,21 +329,45 @@ def thinking_requested(body: dict) -> bool | None:
 
 
 def apply_chat_defaults(body: dict, defaults: dict) -> None:
-    """The operator's defaults (CHAT_DEFAULTS, `{"enable_thinking": false}` as shipped) go
-    in where the request is silent. Reasoning is one thing said in several ways, so the
-    `enable_thinking` default follows what the request already said with `reasoning_effort`
-    or `thinking` — Model Studio refuses `reasoning_effort: low` next to `enable_thinking:
-    false` ("'reasoning_effort' must be 'none' when 'enable_thinking' is false"), which is
-    exactly what an app's thinking-level badge plus the shipped default used to produce."""
+    """Merge operator defaults without contradicting the request's reasoning choice.
+
+    Model Studio reads top-level ``enable_thinking``; vLLM's Qwen chat template reads
+    ``chat_template_kwargs.enable_thinking``. Either default follows an explicit
+    ``reasoning_effort`` or ``thinking`` choice from the app.
+    """
     wants = thinking_requested(body)
     for k, v in defaults.items():
         if k == "enable_thinking" and wants is not None:
             body.setdefault("enable_thinking", wants)
             continue
+        if k == "chat_template_kwargs" and isinstance(v, dict):
+            default_template = dict(v)
+            if "enable_thinking" in default_template and wants is not None:
+                default_template["enable_thinking"] = wants
+            current = body.get(k)
+            if isinstance(current, dict):
+                body[k] = {**default_template, **current}
+            else:
+                body.setdefault(k, default_template)
+            continue
         body.setdefault(k, v)
     effort = body.get("reasoning_effort")
-    if body.get("enable_thinking") is False and isinstance(effort, str) and effort.strip().lower() != "none":
+    if thinking_requested(body) is False and isinstance(effort, str) and effort.strip().lower() != "none":
         body["reasoning_effort"] = "none"
+
+
+def upstream_body(raw: bytes | str) -> dict | None:
+    """The object a provider's error body is about: the body itself when it is one, the
+    first object of a list when the provider wraps it in one (Gemini's OpenAI-compatible
+    endpoint answers a 400 with ``[{"error": {...}}]``), None for anything that is not
+    JSON or neither of the two."""
+    try:
+        obj = json.loads(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if isinstance(obj, list):
+        obj = next((o for o in obj if isinstance(o, dict)), None)
+    return obj if isinstance(obj, dict) else None
 
 
 def upstream_detail(kind: str, status: int, model: str, raw: bytes | str) -> str:
@@ -208,17 +375,14 @@ def upstream_detail(kind: str, status: int, model: str, raw: bytes | str) -> str
     provider's own words (its `error.message`, one line, trimmed) — enough to see *why* a
     request failed from the admin page, never the request's content."""
     message = ""
-    try:
-        obj = json.loads(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw)
-        err = obj.get("error") if isinstance(obj, dict) else None
-        if isinstance(err, dict):
-            message = str(err.get("message") or err.get("code") or "")
-        elif isinstance(err, str):
-            message = err
-        elif isinstance(obj, dict):
-            message = str(obj.get("message") or "")
-    except (ValueError, AttributeError, UnicodeDecodeError):
-        message = ""
+    obj = upstream_body(raw)
+    err = obj.get("error") if obj else None
+    if isinstance(err, dict):
+        message = str(err.get("message") or err.get("code") or "")
+    elif isinstance(err, str):
+        message = err
+    elif obj:
+        message = str(obj.get("message") or "")
     message = " ".join(message.split())
     line = f"{kind} {status} {model}".strip()
     return f"{line}: {message[:200]}" if message else line
@@ -253,16 +417,15 @@ def relay_error_body(status: int, raw: bytes) -> dict:
     key they never had. The provider's text rides along under ``upstream`` for the curious
     and for bug reports."""
     upstream = ""
-    try:
-        up = json.loads(raw)
-        if isinstance(up, dict):
-            e = up.get("error")
-            if isinstance(e, dict) and e.get("message"):
-                upstream = str(e["message"])[:300]
-            elif up.get("message"):
-                upstream = str(up["message"])[:300]
-    except ValueError:
-        pass
+    up = upstream_body(raw)
+    if up:
+        e = up.get("error")
+        if isinstance(e, dict) and e.get("message"):
+            upstream = str(e["message"])[:300]
+        elif isinstance(e, str) and e:
+            upstream = e[:300]
+        elif up.get("message"):
+            upstream = str(up["message"])[:300]
     if status == 400 and content_check_refusal(raw):
         message, code = "The model provider's content check declined this request; try different words", "content_rejected"
     elif status == 400:
@@ -283,6 +446,14 @@ def relay_error_body(status: int, raw: bytes) -> dict:
 
 # where the provider keeps the pictures it makes: its own API host and Alibaba Cloud OSS buckets
 PROVIDER_HOST_SUFFIXES = (".aliyuncs.com", ".alicdn.com")
+
+
+def _unlink_quietly(path: str) -> None:
+    """Remove a temporary file once its response has gone out; one already gone is no error."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _provider_url_ok(url: object, own_hosts: tuple[str, ...] = ()) -> bool:
@@ -338,6 +509,67 @@ def create_app(
             except Exception:
                 log.exception("settle_video_tasks")
 
+    async def _analytics_loop() -> None:
+        # 0.28: the live meter's last hour is read back from `calls` after a restart; the
+        # shape rows of older kept turns are filled in a page at a time (the turns are read
+        # once, off the loop, in small batches so no request waits on the lock); rows past
+        # CALLS_KEEP_DAYS are swept once an hour
+        analytics = app.state.analytics
+        try:
+            warmed = await asyncio.to_thread(lambda: analytics.meter.warm(analytics.db.calls_since(int(time.time()) - 3600)))
+            if warmed:
+                log.info("analytics: %d calls of the last hour read back", warmed)
+        except Exception:
+            log.exception("analytics warm-up")
+        # None, not 0.0: time.monotonic() counts from boot on Linux, so on a machine up for
+        # less than an hour a zero start would hold the first sweep back until it is
+        swept_at: float | None = None
+        repaired_at: float | None = None
+        optimized_at: float | None = None
+        while True:
+            try:
+                if not analytics.backfill_done:
+                    n = await asyncio.to_thread(analytics.backfill_step, 200)
+                    if n and analytics.backfill_rows % 20000 < 200:
+                        log.info("analytics: %d kept turns described so far", analytics.backfill_rows)
+                    await asyncio.sleep(0.5 if n else 60)
+                    continue
+                if not analytics.tokens_done:
+                    # 0.30: the tokens of older kept turns copied beside their shape, a page at a
+                    # time (each page reads its turns' rows, so it is paced like the backfill)
+                    n = await asyncio.to_thread(analytics.tokens_step, 200)
+                    if n and analytics.tokens_rows % 20000 < 200:
+                        log.info("analytics: tokens of %d kept turns copied so far", analytics.tokens_rows)
+                    await asyncio.sleep(0.5 if n else 60)
+                    continue
+                if optimized_at is None or time.monotonic() - optimized_at > 3600:
+                    # the planner's statistics (Database.optimize): milliseconds, once an hour
+                    optimized_at = time.monotonic()
+                    await asyncio.to_thread(cloud.db.optimize)
+                if repaired_at is None or time.monotonic() - repaired_at > 86400:
+                    # once a day: the kept turns whose shape row never got written
+                    repaired_at = time.monotonic()
+                    fixed = await asyncio.to_thread(analytics.describe_missing, 500)
+                    if fixed:
+                        log.info("analytics: %d kept turns described late", fixed)
+                if swept_at is None or time.monotonic() - swept_at > 3600:
+                    swept_at = time.monotonic()
+                    gone = await asyncio.to_thread(cloud.db.sweep_calls, int(time.time()) - max(1, settings.calls_keep_days) * 86400)
+                    if gone:
+                        log.info("analytics: %d call rows older than %d days swept", gone, settings.calls_keep_days)
+                    gone = await asyncio.to_thread(cloud.db.sweep_events, int(time.time()) - max(1, settings.events_keep_days) * 86400)
+                    if gone:
+                        log.info("analytics: %d timeline lines older than %d days swept", gone, settings.events_keep_days)
+                    # 0.29: the record's retention and the media store's cap
+                    swept = await asyncio.to_thread(cloud.sweep_record)
+                    if any(swept.values()):
+                        log.info("record: %(turns)d turns swept, %(files)d files with them, %(trimmed)d trimmed over the cap", swept)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("analytics loop")
+            await asyncio.sleep(60)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         geo.ensure()
@@ -345,13 +577,15 @@ def create_app(
             collector.start()
         rules_task = asyncio.create_task(_rules_loop(), name="control-rules")
         video_task = asyncio.create_task(_video_loop(), name="video-settle")
+        analytics_task = asyncio.create_task(_analytics_loop(), name="analytics")
         try:
             yield
         finally:
             rules_task.cancel()
             video_task.cancel()
-            # waited for, so neither cancellation lands after the database is closed
-            await asyncio.gather(rules_task, video_task, return_exceptions=True)
+            analytics_task.cancel()
+            # waited for, so no cancellation lands after the database is closed
+            await asyncio.gather(rules_task, video_task, analytics_task, return_exceptions=True)
             await collector.stop()
             await http.aclose()
 
@@ -396,6 +630,12 @@ def create_app(
         of a refusal; None when the database is not there or the address is unplaced."""
         return geo.place(client_ip(request)) if geo.ready else None
 
+    def count_request(error_code: str, group: str) -> None:
+        # Keep both writes in one worker call if the waiting request is cancelled.
+        if error_code:
+            cloud.db.daily_add("error", error_code)
+        cloud.db.daily_add("api", group)
+
     @app.middleware("http")
     async def _remember_client(request: Request, call_next):
         # the address and the client software behind this request, for the rows the
@@ -417,9 +657,9 @@ def create_app(
             # call by route group, and an error by its code — written as the answer leaves
             if not path.startswith("/app"):  # the console's own files are not API calls
                 code = getattr(request.state, "error_code", "")
-                if code or response.status_code >= 400:
-                    cloud.db.daily_add("error", code or f"http_{response.status_code}")
-                cloud.db.daily_add("api", api_group(path))
+                if not code and response.status_code >= 400:
+                    code = f"http_{response.status_code}"
+                await run_in_threadpool(count_request, code, api_group(path))
             elif "cache-control" not in response.headers:
                 # the console's script and page are revalidated on every load (an ETag answers
                 # 304 when nothing changed), so a deploy reaches the next reload instead of
@@ -490,7 +730,15 @@ def create_app(
             raise CloudError(400, "code_wrong", "The code is six digits")
         device = str(body.get("device", ""))[:80]
         invite = str(body.get("invite", ""))[:32]
-        key, caller, created = await asyncio.to_thread(cloud.verify_code, ident, code, device, invite)
+        key, caller, created = await asyncio.to_thread(
+            cloud.verify_code,
+            ident,
+            code,
+            device,
+            invite,
+            str(body.get("device_id") or ""),
+            str(body.get("device_kind") or ""),
+        )
         me = cloud.me(caller, client_place(request))
         return {"api_key": key, "created": created, **me}
 
@@ -506,7 +754,15 @@ def create_app(
         if not password:
             raise CloudError(400, "password_required", "Enter the password")
         device = str(body.get("device", ""))[:80]
-        key, caller = await asyncio.to_thread(cloud.login_password, ident, password, device, client_ip(request))
+        key, caller = await asyncio.to_thread(
+            cloud.login_password,
+            ident,
+            password,
+            device,
+            client_ip(request),
+            str(body.get("device_id") or ""),
+            str(body.get("device_kind") or ""),
+        )
         me = cloud.me(caller, client_place(request))
         return {"api_key": key, "created": False, **me}
 
@@ -589,7 +845,128 @@ def create_app(
 
     @app.delete("/v1/me/samples")
     async def me_delete_samples(caller: Caller = Depends(caller_dep)) -> dict:
-        return {"deleted": cloud.delete_samples(caller)}
+        """Data controls' delete: the training turns and (0.29) the record, files included."""
+        return cloud.delete_samples(caller)
+
+    # -- 0.29: the record and its files (docs/cloud.md, "The record") ------------------------
+
+    def _turn_meta(request: Request) -> dict:
+        meta = {
+            "ua": (request.headers.get("user-agent") or "")[:120],
+            "lang": (request.headers.get("accept-language") or "")[:40],
+            "ip": client_ip(request),
+        }
+        # 0.31: the app's own word on its platform, when the user agent would not say
+        # (the desktop's Node fetch, the runtime's SDK calls); client.platform_from reads it
+        claim = provenance.platform_claim(request.headers.get("x-nanomuse-platform"))
+        if claim:
+            meta["platform"] = claim
+        return meta
+
+    @app.get("/v1/turns")
+    async def my_turns(
+        since: int = 0,
+        limit: int = 50,
+        before: int = 0,
+        before_id: str = "",
+        conversation: str = "",
+        caller: Caller = Depends(caller_dep),
+    ) -> dict:
+        """The account's record, newest first, for a device reading it back: each turn's
+        request (pictures as `blob:sha256:` references, files at GET /v1/blobs/{sha256})
+        and the answer. Pages with `before` (the last row's ts) and `before_id` (its id)."""
+        return {"turns": cloud.my_turns(caller, since, max(1, limit), max(0, before), before_id[:96], conversation)}
+
+    @app.get("/v1/turns/{turn_id}")
+    async def my_turn(turn_id: str, caller: Caller = Depends(caller_dep)) -> dict:
+        turn = cloud.my_turn(caller, turn_id)
+        if turn is None:
+            raise CloudError(404, "not_found", "No such turn on this account")
+        return turn
+
+    @app.post("/v1/turns", status_code=201)
+    async def post_turn(request: Request, caller: Caller = Depends(caller_dep)) -> dict:
+        """A turn the app ran on a key of its own, kept beside the Cloud ones (1.0.7 on):
+        `model`, `messages`, `response: {message, usage?}`, and `provider`, `ts`,
+        `conversation`, `id` as the app has them. Files first: PUT /v1/blobs/{sha256}, then
+        `blob:sha256:<hex>` where the picture was; or inline as data URLs within
+        MAX_REQUEST_BYTES."""
+        body = await _json(request)
+        # off the loop: the pictures are decoded, hashed and written to disk, then the row
+        return await asyncio.to_thread(
+            cloud.add_own_turn,
+            caller,
+            body,
+            meta=_turn_meta(request),
+            device=(request.headers.get("x-nanomuse-device") or "")[:80],
+            headers=dict(request.headers),
+        )
+
+    # -- 0.31: what the apps report around a turn (docs/cloud.md, "Client events") -----------
+
+    @app.post("/v1/events", status_code=202)
+    async def post_events(request: Request, caller: Caller = Depends(caller_dep)) -> dict:
+        """Short records of what happened in the app around a turn, never a message: the
+        Sentinel's decision on a tool call, an approval's result, why a reply was stopped,
+        a thumb up or down (provenance.KNOWN_EVENTS). `{"events": [{kind, ts?, turn?,
+        conversation?, data}]}`, at most 100 per request; `data` is a flat object of short
+        codes, numbers and booleans. Answers how many were kept; one the relay will not
+        keep is dropped, not refused, so an older app's list never fails whole."""
+        body = await _json(request)
+        who = client_info.current()
+        return cloud.add_client_events(
+            caller, body.get("events"), platform=who.platform, device=(request.headers.get("x-nanomuse-device") or "")[:80]
+        )
+
+    async def _raw(request: Request, limit: int) -> bytes:
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise _too_large(int(declared))
+        chunks: list[bytes] = []
+        size = 0
+        try:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise _too_large(int(declared) if declared.isdigit() else None)
+                chunks.append(chunk)
+        except ClientDisconnect as e:
+            raise CloudError(400, "client_disconnected", "The request ended before its body") from e
+        return b"".join(chunks)
+
+    @app.put("/v1/blobs/{sha256}")
+    async def put_blob(sha256: str, request: Request, caller: Caller = Depends(caller_dep)) -> dict:
+        """A picture, an audio clip or a video, raw in the body with its `Content-Type`,
+        named by its SHA-256 (checked). Stored once however many devices send it; answers
+        `known: true` when it already was. HEAD first saves the upload."""
+        if not is_sha256(sha256.lower()):
+            raise CloudError(400, "bad_request", "the path is the file's hex SHA-256")
+        data = await _raw(request, settings.blob_max_bytes)
+
+        def store() -> dict:  # the hash of up to 32 MiB and the write, off the loop
+            if hashlib.sha256(data).hexdigest() != sha256.lower():
+                raise CloudError(400, "hash_mismatch", "the body's SHA-256 is not the one in the path")
+            return cloud.put_blob(caller, data, request.headers.get("content-type") or "")
+
+        return await asyncio.to_thread(store)
+
+    @app.head("/v1/blobs/{sha256}")
+    async def head_blob(sha256: str, caller: Caller = Depends(caller_dep)) -> Response:
+        found = cloud.blob_for(sha256.lower(), caller)
+        if found is None:
+            raise CloudError(404, "not_found", "No such file on this account")
+        path, mime = found
+        return Response(status_code=200, media_type=mime, headers={"Content-Length": str(path.stat().st_size)})
+
+    @app.get("/v1/blobs/{sha256}")
+    async def get_blob(sha256: str, caller: Caller = Depends(caller_dep)) -> Response:
+        """The file, for an account that holds a reference to it (one of its turns, its
+        profile's clips, an upload of its own). Immutable: cache it for good."""
+        found = cloud.blob_for(sha256.lower(), caller)
+        if found is None:
+            raise CloudError(404, "not_found", "No such file on this account")
+        path, mime = found
+        return FileResponse(path, media_type=mime, headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
     @app.get("/v1/me/sessions")
     async def me_sessions(caller: Caller = Depends(caller_dep)) -> dict:
@@ -708,13 +1085,17 @@ def create_app(
         """0.20: {cid, working, device?} — a turn started or ended on that conversation on the
         calling device (`device` as `push` carries it, else `X-Nanomuse-Device`). The
         account's other sockets hear a hub `working` frame; the relay remembers a `true` for
-        ten minutes. Presence, not data: nothing is written."""
+        ten minutes. Presence, not data: nothing is written. 0.31: a `true` may say
+        `state` (`working` | `waiting`) and `detail` — the step's own words, capped —
+        which ride the frame to the other devices' screens."""
         body = await _json(request)
         cid = str(body.get("cid") or "")
         if not cid or "working" not in body:
             raise CloudError(400, "bad_request", "Say cid and working: true or false")
         device = str(body.get("device") or request.headers.get("x-nanomuse-device", ""))[:80]
-        frame = sync_store.set_working(caller.account_id, cid, device, bool(body["working"]))
+        state = str(body.get("state") or "")
+        detail = str(body.get("detail") or "")
+        frame = sync_store.set_working(caller.account_id, cid, device, bool(body["working"]), state=state, detail=detail)
         hub = getattr(app.state, "hub", None)
         if hub is not None:
             await hub.notify_working(caller.account_id, frame)
@@ -816,14 +1197,93 @@ def create_app(
         log.warning("chat upstream HTTP %s; retry %s/%s", status, attempt + 1, chat_retry_limit)
         await asyncio.sleep(max(0.0, settings.chat_retry_base_s) * (2**attempt))
 
-    async def chat_post(url: str, headers: dict[str, str], payload: bytes) -> httpx.Response:
-        """One non-streaming turn, queued globally and retried before an answer exists."""
+    # 0.28: what each chat request looked like and how it went (analytics.py) — timings,
+    # the way it ended, its shape; never its words. The live page reads the meter, the
+    # drill-downs read the rows.
+    meter = LiveMeter()
+    analytics = Analytics(cloud, meter, lambda: getattr(app.state, "hub", None), chat_gate.snapshot)
+    app.state.analytics = analytics
+    app.state.meter = meter
+
+    def record_call(
+        call: InFlightCall,
+        status: str,
+        detail: str = "",
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cached_tokens: int = 0,
+        called: list[str] | None = None,
+        retries: int = 0,
+        request_id: str = "",
+    ) -> None:
+        now_m = time.monotonic()
+        slot_at = call.slot_at or now_m
+        first_at = call.first_at or now_m
+        shape = call.shape
+        names = called or []
+        row = {
+            "ts": call.ts,
+            "account_id": call.account_id,
+            "model": call.model,
+            "platform": call.platform,
+            "family": call.family,
+            "status": status,
+            "detail": str(detail or "")[:120],
+            "stream": 1 if call.stream else 0,
+            "wait_ms": max(0, int((slot_at - call.started) * 1000)),
+            "ttft_ms": max(0, int((first_at - slot_at) * 1000)) if call.slot_at else 0,
+            "total_ms": max(0, int((now_m - call.started) * 1000)),
+            "prompt_tokens": int(prompt_tokens or 0),
+            "completion_tokens": int(completion_tokens or 0),
+            "cached_tokens": min(max(0, int(cached_tokens or 0)), max(0, int(prompt_tokens or 0))),
+            "messages": int(shape.get("messages", 0)),
+            "images": int(shape.get("images", 0)),
+            "tools": int(shape.get("tools", 0)),
+            "tool_names": join_tool_names(names),
+            "hands": 1 if (shape.get("hands") or any(is_hands_tool(n) for n in names)) else 0,
+            "retries": int(retries or 0),
+            "request_id": request_id,
+            "run": call.run,
+        }
+        meter.finish(call, row)
+        try:
+            cloud.db.add_call(row)
+        except Exception:  # telemetry must never fail a chat
+            log.exception("calls row")
+
+    # the record's writes in flight, held so the loop does not drop them half-way (and so
+    # a test can wait for them: app.state.record_tasks)
+    record_tasks: set[asyncio.Task] = set()
+    app.state.record_tasks = record_tasks
+
+    def record_later(*args: Any, **kwargs: Any) -> None:
+        """The turn's record (service.record_turn) written off the loop after the answer
+        has left — the pictures are decoded, hashed and written to disk there, and the
+        row after them. A failure is logged; it is never the person's problem."""
+        if not settings.record_turns:
+            return
+
+        async def run() -> None:
+            try:
+                await asyncio.to_thread(cloud.record_turn, *args, **kwargs)
+            except Exception:
+                log.exception("record turn")
+
+        task = asyncio.create_task(run(), name="record-turn")
+        record_tasks.add(task)
+        task.add_done_callback(record_tasks.discard)
+
+    async def chat_post(url: str, headers: dict[str, str], payload: bytes, call: InFlightCall) -> tuple[httpx.Response, int]:
+        """One non-streaming turn, queued globally and retried before an answer exists;
+        answers the response and how many times it was retried."""
         async with chat_gate.slot():
+            meter.slot(call)
             attempt = 0
             while True:
                 r = await http.post(url, headers=headers, content=payload)
                 if not chat_retryable(r.status_code) or attempt >= chat_retry_limit:
-                    return r
+                    return r, attempt
                 await chat_retry_pause(attempt, r.status_code)
                 attempt += 1
 
@@ -835,11 +1295,34 @@ def create_app(
         # settled would count against the account's in-flight limit until it timed out
         headers = upstream_headers()
         request_id = uuid.uuid4().hex[:16]
+        stream = bool(body.get("stream"))
+        who = client_info.current()
+        call = meter.start(caller.account_id, spec.id, who.platform, stream, request_shape(body))
+        call.family = client_info.ua_family(who.ua)
+        # 0.31: who started the turn and where it sits (provenance.py), from the app's headers
+        where = provenance.from_headers(request.headers)
+        call.run = where["run"]
+        # 0.28 `apps_only`: the allowance is for nanoMuse; a pool worker, an SDK or another
+        # app on a nanoMuse key is told where to go instead. Members are on the operator's
+        # own bill by choice and may call from whatever they like.
+        if cloud.controls.on("apps_only") and not caller.member and not client_info.is_nanomuse_client(who.platform):
+            record_call(call, "refused", "client_not_supported", request_id=request_id)
+            cloud.note(caller.account_id, "client.refused", call.family)
+            raise CloudError(
+                403,
+                "client_not_supported",
+                "nanoMuse Cloud answers the nanoMuse apps only. In other software, use a model key of your own; "
+                "your sign-in and your allowance are kept for the apps.",
+                {"client": call.family},
+            )
         # held at a typical turn's price while it runs; settled when the reply is in
-        cloud.check_budget(caller, request_id=request_id, hold_uy=cloud.chat_reserve_uy(spec), place=client_place(request))
+        try:
+            cloud.check_budget(caller, request_id=request_id, hold_uy=cloud.chat_reserve_uy(spec), place=client_place(request))
+        except CloudError as e:
+            record_call(call, "refused", e.code, request_id=request_id)
+            raise
         body["model"] = spec.upstream
         apply_chat_defaults(body, settings.chat_defaults)
-        stream = bool(body.get("stream"))
         if stream:
             opts = body.get("stream_options") if isinstance(body.get("stream_options"), dict) else {}
             opts["include_usage"] = True
@@ -848,40 +1331,56 @@ def create_app(
         # OpenAI request fields are dangerous, but `user` is ours to set so the
         # provider's abuse tooling can tell accounts apart without knowing them.
         body["user"] = caller.account_id[:32]
+        body.pop("store", None)  # OpenAI-only field; some upstreams (e.g. Gemini openai-compat) reject unknown fields with 400
         url = settings.upstream_base.rstrip("/") + "/chat/completions"
         request_body = dumps(body).encode()
         fallback_prompt_tokens = math.ceil(prompt_chars(body.get("messages") or []) / 3)
         # For an account that opted in, the turn is kept once it is answered (service.keep_sample)
         # with the platform and language hints from the headers and, since 0.10, the address
         # (the export for training drops the address along with the account id).
-        sample_meta = (
-            {
-                "ua": (request.headers.get("user-agent") or "")[:120],
-                "lang": (request.headers.get("accept-language") or "")[:40],
-                "ip": client_ip(request),
-            }
-            if caller.contribute
-            else None
-        )
+        turn_meta = _turn_meta(request)
+        # 0.29: the record keeps the whole turn once it is answered (service.record_turn, off
+        # the loop); a 1.0.7 app names the device and the conversation the turn belongs to
+        turn_where = {
+            "device": (request.headers.get("x-nanomuse-device") or "")[:80],
+            "conversation": (request.headers.get("x-nanomuse-conversation") or "")[:80],
+            "provenance_": where,
+        }
         sample_messages = body.get("messages") if caller.contribute and isinstance(body.get("messages"), list) else []
+        sample_meta = None
+        if caller.contribute:
+            # 0.31: the kept turn says where it came from and names the record's turn, so the
+            # app's later word on it (a thumb, why it was stopped) joins it
+            sample_meta = dict(turn_meta)
+            sample_meta.update(
+                cloud.sample_provenance("cloud", request_id, where, sample_messages, conversation=turn_where["conversation"])
+            )
 
         if not stream:
+            retries = 0
             try:
                 try:
-                    r = await chat_post(url, headers, request_body)
+                    r, retries = await chat_post(url, headers, request_body, call)
                 except httpx.HTTPError as e:
                     log.warning("upstream error: %s", e)
+                    record_call(call, _broken_status(e), type(e).__name__, retries=retries, request_id=request_id)
                     raise CloudError(502, "upstream", "The model provider did not answer") from e
+                meter.first(call)
                 if r.status_code >= 400:
-                    cloud.note(
-                        caller.account_id,
-                        upstream_event_kind(r.status_code, r.content),
-                        upstream_detail("chat", r.status_code, spec.id, r.content),
+                    event_kind = upstream_event_kind(r.status_code, r.content)
+                    cloud.note(caller.account_id, event_kind, upstream_detail("chat", r.status_code, spec.id, r.content))
+                    record_call(
+                        call,
+                        "content_rejected" if event_kind == "content.rejected" else "upstream_error",
+                        str(r.status_code),
+                        retries=retries,
+                        request_id=request_id,
                     )
                     return _relay_error(r, request)
                 try:
                     obj = r.json()
                 except ValueError as e:
+                    record_call(call, "broken", "unreadable reply", retries=retries, request_id=request_id)
                     raise CloudError(502, "upstream", "The model provider sent an unreadable reply") from e
                 usage = usage_from_json(obj)
                 text = _reply_text(obj)
@@ -890,8 +1389,21 @@ def create_app(
                 charged = cloud.charge_chat(caller, spec, usage.prompt, usage.completion, request_id, cached_tokens=usage.cached)
             finally:
                 cloud.settle(caller, request_id)
+            record_call(
+                call,
+                "ok",
+                prompt_tokens=usage.prompt,
+                completion_tokens=usage.completion,
+                cached_tokens=usage.cached,
+                called=reply_tool_names(obj),
+                retries=retries,
+                request_id=request_id,
+            )
             if sample_meta is not None:
-                cloud.keep_sample(caller, spec.id, sample_messages, text, usage.prompt, usage.completion, sample_meta)
+                cloud.keep_sample(
+                    caller, spec.id, sample_messages, text, usage.prompt, usage.completion, sample_meta, message=_reply_message(obj)
+                )
+            record_later(caller, spec.id, body, _reply_message(obj), usage, request_id=request_id, meta=turn_meta, **turn_where)
             if isinstance(obj, dict):
                 obj["model"] = spec.id
                 obj.setdefault("nanomuse", {})["charged"] = charged
@@ -901,68 +1413,124 @@ def create_app(
             usage: Usage | None = None
             text_len = 0
             # the assistant's words: the estimate when the provider sends no usage, and the
-            # kept turn of a contributing account
+            # kept turn of a contributing account; the whole message, for the record
             reply: list[str] = []
+            assembler = StreamAssembler()
             # A request the provider refused, or dropped before a single token, costs the
             # account nothing; a stream that broke off midway is charged for what arrived.
             failed = False
             accepted = False
+            # how it ended, for the telemetry row: set at every exit; still None in `finally`
+            # when the generator was closed under us, which is the client going away
+            status: str | None = None
+            detail = ""
+            called: list[str] = []
+            attempt = 0
+            ticket = chat_gate.ticket()
+            started = time.monotonic()
             try:
-                async with chat_gate.slot():
-                    attempt = 0
-                    while True:
-                        retry_status = 0
-                        async with http.stream("POST", url, headers=headers, content=request_body) as r:
-                            if r.status_code >= 400:
-                                raw = await r.aread()
-                                if chat_retryable(r.status_code) and attempt < chat_retry_limit:
-                                    retry_status = r.status_code
-                                else:
-                                    cloud.note(
-                                        caller.account_id,
-                                        upstream_event_kind(r.status_code, raw),
-                                        upstream_detail("chat", r.status_code, spec.id, raw),
-                                    )
-                                    failed = True
-                                    err = relay_error_body(r.status_code, raw)
-                                    # The 200 has left; count the embedded stream error here.
-                                    cloud.db.daily_add("error", str(err["error"]["code"]))
-                                    yield f"data: {dumps(err)}\n\n".encode()
-                                    yield b"data: [DONE]\n\n"
-                                    return
+                # 0.31: while the request waits for a provider slot, the app hears how many are
+                # ahead of it (a chunk with no choices, which every parser lets through, and a
+                # `nanomuse` field the apps read), every STATUS_TICK seconds; the same chunks
+                # keep the connection warm through NATs that drop a silent one
+                queued = False
+                while not await ticket.acquire(STATUS_TICK):
+                    queued = True
+                    yield status_chunk(spec.id, "queued", started, ahead=ticket.ahead)
+                meter.slot(call)
+                if queued:
+                    # the turn's own: the app drops "ahead of you" and waits for the model
+                    yield status_chunk(spec.id, "working", started)
+                while True:
+                    retry_status = 0
+                    # the provider's first bytes, with a comment line (which every SSE parser
+                    # skips) every KEEPALIVE_TICK seconds until they come: a busy endpoint takes
+                    # a minute and more over a 12k-token prompt, longer than idle lines live
+                    opening = asyncio.ensure_future(
+                        http.send(http.build_request("POST", url, headers=headers, content=request_body), stream=True)
+                    )
+                    try:
+                        while True:
+                            done, _pending = await asyncio.wait({opening}, timeout=KEEPALIVE_TICK)
+                            if done:
+                                break
+                            yield b": keepalive\n\n"
+                    except BaseException:
+                        opening.cancel()
+                        raise
+                    r = opening.result()
+                    try:
+                        if r.status_code >= 400:
+                            raw = await r.aread()
+                            if chat_retryable(r.status_code) and attempt < chat_retry_limit:
+                                retry_status = r.status_code
                             else:
-                                accepted = True
-                                async for line in r.aiter_lines():
-                                    if line.startswith("data:"):
-                                        payload = line[5:].strip()
-                                        if payload and payload != "[DONE]":
-                                            try:
-                                                obj = json.loads(payload)
-                                            except ValueError:
-                                                obj = None
-                                            if isinstance(obj, dict):
-                                                u = usage_from_json(obj)
-                                                if u is not None:
-                                                    usage = u
-                                                for ch in obj.get("choices") or []:
-                                                    d = ch.get("delta") if isinstance(ch, dict) else None
-                                                    if isinstance(d, dict) and isinstance(d.get("content"), str):
-                                                        text_len += len(d["content"])
-                                                        reply.append(d["content"])
-                                                obj["model"] = spec.id
-                                                payload = dumps(obj)
-                                        yield f"data: {payload}\n\n".encode()
-                                    elif line == "":
-                                        continue
-                                    else:
-                                        yield (line + "\n").encode()
+                                event_kind = upstream_event_kind(r.status_code, raw)
+                                cloud.note(caller.account_id, event_kind, upstream_detail("chat", r.status_code, spec.id, raw))
+                                failed = True
+                                status = "content_rejected" if event_kind == "content.rejected" else "upstream_error"
+                                detail = str(r.status_code)
+                                err = relay_error_body(r.status_code, raw)
+                                # The 200 has left; count the embedded stream error here.
+                                cloud.db.daily_add("error", str(err["error"]["code"]))
+                                yield f"data: {dumps(err)}\n\n".encode()
+                                yield b"data: [DONE]\n\n"
                                 return
-                        await chat_retry_pause(attempt, retry_status)
-                        attempt += 1
+                        else:
+                            accepted = True
+                            lines = r.aiter_lines()
+                            # the first line the same way: the headers may come well before it
+                            first = asyncio.ensure_future(anext(lines, None))
+                            try:
+                                while True:
+                                    done, _pending = await asyncio.wait({first}, timeout=KEEPALIVE_TICK)
+                                    if done:
+                                        break
+                                    yield b": keepalive\n\n"
+                            except BaseException:
+                                first.cancel()
+                                raise
+                            head = first.result()
+                            async for line in _prepend(head, lines):
+                                if line.startswith("data:"):
+                                    payload = line[5:].strip()
+                                    if payload and payload != "[DONE]":
+                                        meter.first(call)
+                                        try:
+                                            obj = json.loads(payload)
+                                        except ValueError:
+                                            obj = None
+                                        if isinstance(obj, dict):
+                                            u = usage_from_json(obj)
+                                            if u is not None:
+                                                usage = u
+                                            assembler.feed(obj)
+                                            for ch in obj.get("choices") or []:
+                                                d = ch.get("delta") if isinstance(ch, dict) else None
+                                                if isinstance(d, dict) and isinstance(d.get("content"), str):
+                                                    text_len += len(d["content"])
+                                                    reply.append(d["content"])
+                                                    call.tokens_out += 1
+                                            called.extend(delta_tool_names(obj))
+                                            obj["model"] = spec.id
+                                            payload = dumps(obj)
+                                    yield f"data: {payload}\n\n".encode()
+                                elif line == "":
+                                    continue
+                                else:
+                                    yield (line + "\n").encode()
+                            status = "ok"
+                            return
+                    finally:
+                        await r.aclose()
+                    await chat_retry_pause(attempt, retry_status)
+                    attempt += 1
+                    call.retries = attempt
             except httpx.HTTPError as e:
                 log.warning("upstream stream error: %s %s", type(e).__name__, e)
                 cloud.note(caller.account_id, "upstream.error", f"chat stream broke {spec.id}: {type(e).__name__}")
                 failed = usage is None and text_len == 0
+                status, detail = _broken_status(e), type(e).__name__
                 err = {"error": {"message": "The model provider stopped answering", "type": "nanomuse_cloud", "code": "upstream"}}
                 yield f"data: {dumps(err)}\n\n".encode()
                 yield b"data: [DONE]\n\n"
@@ -972,8 +1540,43 @@ def create_app(
                         usage = Usage(fallback_prompt_tokens, estimate_tokens("".join(reply)))
                     cloud.charge_chat(caller, spec, usage.prompt, usage.completion, request_id, cached_tokens=usage.cached)
                     if sample_meta is not None:
-                        cloud.keep_sample(caller, spec.id, sample_messages, "".join(reply), usage.prompt, usage.completion, sample_meta)
+                        cloud.keep_sample(
+                            caller,
+                            spec.id,
+                            sample_messages,
+                            "".join(reply),
+                            usage.prompt,
+                            usage.completion,
+                            sample_meta,
+                            message=assembler.message(),
+                        )
+                    # a turn kept short says why (0.30): `client_gone` is the app closing the
+                    # stream (the person stopped, or the app gave up waiting), `upstream_timeout`
+                    # and `broken` are the provider's end — the same words as the telemetry row
+                    record_later(
+                        caller,
+                        spec.id,
+                        body,
+                        assembler.message(),
+                        usage,
+                        request_id=request_id,
+                        meta=turn_meta if status == "ok" else {**turn_meta, "ended": status or "client_gone"},
+                        status="ok" if status == "ok" else "partial",
+                        **turn_where,
+                    )
+                ticket.release()
                 cloud.settle(caller, request_id)
+                record_call(
+                    call,
+                    status or "client_gone",
+                    detail,
+                    prompt_tokens=usage.prompt if usage else 0,
+                    completion_tokens=usage.completion if usage else 0,
+                    cached_tokens=usage.cached if usage else 0,
+                    called=called,
+                    retries=attempt,
+                    request_id=request_id,
+                )
 
         return StreamingResponse(
             gen(),
@@ -1346,9 +1949,14 @@ def create_app(
         if not settings.admin_token or not secrets.compare_digest((x_admin_token or "").encode(), settings.admin_token.encode()):
             raise CloudError(401, "admin", "admin token required")
 
+    # The console's pages read through `cloud.reads` (the read-only connection) in a thread:
+    # a page that takes seconds on a large file (every account, a month of the ledger) then
+    # costs the operator the wait and nobody else anything. The handlers that write stay on
+    # the loop with the relay's own connection, as every request does for its few rows.
+
     @app.get("/v1/admin/accounts", dependencies=[Depends(admin_dep)])
     async def admin_accounts() -> dict:
-        accounts = cloud.admin_accounts()
+        accounts = await asyncio.to_thread(cloud.reads.admin_accounts)
         hub = getattr(app.state, "hub", None)
         if hub is not None:
             for a in accounts:
@@ -1357,7 +1965,7 @@ def create_app(
 
     @app.get("/v1/admin/usage", dependencies=[Depends(admin_dep)])
     async def admin_usage(days: int = 14) -> dict:
-        return {"days": cloud.admin_usage(max(1, min(days, 90)))}
+        return {"days": await asyncio.to_thread(cloud.reads.admin_usage, max(1, min(days, 90)))}
 
     @app.get("/v1/admin/health", dependencies=[Depends(admin_dep)])
     async def admin_health() -> dict:
@@ -1369,7 +1977,9 @@ def create_app(
         the provider is answering and only the words are the matter."""
         hub = getattr(app.state, "hub", None)
         t = int(time.time())
-        hour = cloud.db.events_since(t - 3600)
+        reads = cloud.reads.db
+        hour = await asyncio.to_thread(reads.events_since, t - 3600)
+        requests_hour = await asyncio.to_thread(reads.requests_since_all, t - 3600)
         in_flight = cloud.in_flight.snapshot()
         upstream_errors = int(hour.get("upstream.error", 0))
         db_health = cloud.db.health()
@@ -1381,7 +1991,7 @@ def create_app(
             "chat_upstream": {**chat_gate.snapshot(), "retries": chat_retry_limit},
             "hub": hub.stats() if hub is not None else None,
             "last_hour": {
-                "requests": cloud.db.requests_since_all(t - 3600),
+                "requests": requests_hour,
                 "upstream_errors": upstream_errors,
                 "content_rejected": int(hour.get("content.rejected", 0)),
                 "budget_refused": int(hour.get("budget.refused", 0)),
@@ -1402,7 +2012,7 @@ def create_app(
             problems.append("no upstream key")
         # invites being farmed: a code bringing many accounts in a day, or inviters whose
         # people never use anything; each alert is one sentence here and the detail below
-        alerts = cloud.invite_alerts()
+        alerts = await asyncio.to_thread(cloud.reads.invite_alerts)
         for alert in alerts:
             problems.append(f"{alert['message']}; {alert['hint']}")
         out["alerts"] = alerts
@@ -1412,7 +2022,7 @@ def create_app(
 
     @app.get("/v1/admin/overview", dependencies=[Depends(admin_dep)])
     async def admin_overview(days: int = 30) -> dict:
-        out = cloud.admin_overview(max(1, min(days, 365)))
+        out = await asyncio.to_thread(cloud.reads.admin_overview, max(1, min(days, 365)))
         hub = getattr(app.state, "hub", None)
         out["online_devices"] = hub.online_count() if hub is not None else 0
         out["version"] = __version__
@@ -1421,7 +2031,7 @@ def create_app(
 
     @app.get("/v1/admin/series", dependencies=[Depends(admin_dep)])
     async def admin_series(days: int = 30) -> dict:
-        out = cloud.admin_series(max(1, min(days, 365)))
+        out = await asyncio.to_thread(cloud.reads.admin_series, max(1, min(days, 365)))
         hub = getattr(app.state, "hub", None)
         out["online_devices"] = hub.online_count() if hub is not None else 0
         out["web"] = await web_info()
@@ -1464,7 +2074,7 @@ def create_app(
 
     @app.get("/v1/admin/traffic", dependencies=[Depends(admin_dep)])
     async def admin_traffic(days: int = 30) -> dict:
-        return cloud.admin_traffic(max(1, min(days, 365)))
+        return await asyncio.to_thread(cloud.reads.admin_traffic, max(1, min(days, 365)))
 
     @app.get("/v1/admin/places", dependencies=[Depends(admin_dep)])
     async def admin_places(days: int = 30) -> dict:
@@ -1474,7 +2084,7 @@ def create_app(
         database is there at all."""
         days = max(1, min(days, 365))
         geo.ensure()
-        counts = cloud.db.address_counts(int(time.time()) - days * 86400)
+        counts = await asyncio.to_thread(cloud.reads.db.address_counts, int(time.time()) - days * 86400)
         out: dict = {"days": days, "geo": geo.status()}
         for key, rows in counts.items():
             out[key] = group_places(rows, geo) if geo.ready else []
@@ -1500,11 +2110,11 @@ def create_app(
 
     @app.get("/v1/admin/data", dependencies=[Depends(admin_dep)])
     async def admin_data(days: int = 30) -> dict:
-        return cloud.admin_data(max(1, min(days, 365)))
+        return await asyncio.to_thread(cloud.reads.admin_data, max(1, min(days, 365)))
 
     @app.get("/v1/admin/accounts/{account_id}", dependencies=[Depends(admin_dep)])
     async def admin_account(account_id: str, days: int = 30) -> dict:
-        out = cloud.admin_account(account_id, max(1, min(days, 365)))
+        out = await asyncio.to_thread(cloud.reads.admin_account, account_id, max(1, min(days, 365)))
         hub = getattr(app.state, "hub", None)
         if hub is not None:
             out["devices"] = hub.devices(account_id)
@@ -1523,7 +2133,10 @@ def create_app(
         `q` (a text the model name or the note contains) narrow the page and its `total`."""
         if cloud.db.account(account_id) is None:
             raise CloudError(404, "no_account", "No such account")
-        return with_places(cloud.ledger_page(account_id, max(1, min(limit, 1000)), max(0, before), _kinds(kind), q.strip()[:80]))
+        page = await asyncio.to_thread(
+            cloud.reads.ledger_page, account_id, max(1, min(limit, 1000)), max(0, before), _kinds(kind), q.strip()[:80]
+        )
+        return with_places(page)
 
     @app.get("/v1/admin/accounts/{account_id}/events", dependencies=[Depends(admin_dep)])
     async def admin_account_events(account_id: str, limit: int = 200, before: int = 0, kind: str = "", q: str = "") -> dict:
@@ -1531,14 +2144,17 @@ def create_app(
         narrow it the same way as the statement, `q` matching the kind name or the detail."""
         if cloud.db.account(account_id) is None:
             raise CloudError(404, "no_account", "No such account")
-        return with_places(cloud.events_page(account_id, max(1, min(limit, 1000)), max(0, before), _kinds(kind), q.strip()[:80]))
+        page = await asyncio.to_thread(
+            cloud.reads.events_page, account_id, max(1, min(limit, 1000)), max(0, before), _kinds(kind), q.strip()[:80]
+        )
+        return with_places(page)
 
     @app.get("/v1/admin/address", dependencies=[Depends(admin_dep)])
     async def admin_address(ip: str = "") -> dict:
         """The accounts seen from one address, and where it is."""
         if not ip.strip():
             raise CloudError(400, "bad_request", "Say which address: ?ip=…")
-        out = cloud.admin_address(ip)
+        out = await asyncio.to_thread(cloud.reads.admin_address, ip)
         place = geo.place(ip.strip())
         out["place"] = place.as_dict() if place is not None else None
         return with_places(out)
@@ -1548,7 +2164,7 @@ def create_app(
         """The inviters in order of how many accounts their code brought, with what those
         accounts did and the newest `per` of them, and the funnel; an account's detail
         page lists its invitees in full."""
-        return with_places(cloud.admin_invites(max(1, min(limit, 1000)), max(0, min(per, 100))))
+        return with_places(await asyncio.to_thread(cloud.reads.admin_invites, max(1, min(limit, 1000)), max(0, min(per, 100))))
 
     @app.post("/v1/admin/invites/abuse", dependencies=[Depends(admin_dep)])
     async def admin_invite_abuse(request: Request) -> dict:
@@ -1574,37 +2190,120 @@ def create_app(
     async def admin_events(limit: int = 200, kind: str = "", before: int = 0) -> dict:
         """Everyone's timeline, newest first; `kind` is a comma list; `before` (0.26) is
         the id of the last row shown, so the page reads on past the first 200."""
-        return with_places({"events": cloud.admin_events(limit, _kinds(kind), max(0, before))})
+        return with_places({"events": await asyncio.to_thread(cloud.reads.admin_events, limit, _kinds(kind), max(0, before))})
 
     @app.get("/v1/admin/samples", dependencies=[Depends(admin_dep)])
     async def admin_samples(account_id: str = "", limit: int = 100, since: int = 0, before: int = 0, before_id: str = "") -> dict:
         """Contributed chat turns — only from accounts that turned contribution on. Pages
         with `before` (the last row's ts) and `before_id` (its id), newest first."""
+        reads = cloud.reads
         return with_places(
             {
-                "samples": cloud.admin_samples(account_id or None, since, limit, before, before_id[:64]),
-                "total": cloud.db.sample_count(account_id or None),
+                "samples": await asyncio.to_thread(reads.admin_samples, account_id or None, since, limit, before, before_id[:64]),
+                "total": await asyncio.to_thread(reads.db.sample_count, account_id or None),
             }
         )
+
+    @app.get("/v1/admin/turns", dependencies=[Depends(admin_dep)])
+    async def admin_turns(
+        account_id: str = "", limit: int = 50, since: int = 0, before: int = 0, before_id: str = "", conversation: str = ""
+    ) -> dict:
+        """The record (0.29): whole turns, newest first, with the same paging as samples."""
+        reads = cloud.reads
+        return with_places(
+            {
+                "turns": await asyncio.to_thread(reads.admin_turns, account_id or None, since, limit, before, before_id[:96], conversation),
+                "total": await asyncio.to_thread(reads.db.turn_count, account_id or None),
+            }
+        )
+
+    @app.get("/v1/admin/turns/export", dependencies=[Depends(admin_dep)])
+    async def admin_turns_export(since: int = 0, account_id: str = "") -> Response:
+        """The record as JSON lines, account ids included (it is the account's data, not the
+        training set); pictures stay references, fetched by hash from /v1/admin/blobs. A
+        generator over the read-only connection: Starlette pulls each line in a thread."""
+        name = f"nanomuse-turns-{account_id[:8]}-{since}" if account_id else f"nanomuse-turns-{since}"
+        return StreamingResponse(
+            cloud.reads.export_turns(since, account_id or None),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="{name}.jsonl"', "Cache-Control": "no-store"},
+        )
+
+    @app.get("/v1/admin/record", dependencies=[Depends(admin_dep)])
+    async def admin_record(days: int = 30) -> dict:
+        """What the record holds: turns and files in all and per day, the store against its cap."""
+        return await asyncio.to_thread(cloud.reads.admin_record, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/blobs/{sha256}", dependencies=[Depends(admin_dep)])
+    async def admin_blob(sha256: str) -> Response:
+        found = cloud.blob_for(sha256.lower())
+        if found is None:
+            raise CloudError(404, "not_found", "No such file")
+        path, mime = found
+        return FileResponse(path, media_type=mime, headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
     @app.get("/v1/admin/samples/export", dependencies=[Depends(admin_dep)])
     async def admin_samples_export(since: int = 0, account_id: str = "") -> Response:
         """The training set as JSON lines (one turn per line, no account ids, no addresses);
         with `account_id`, one account's turns. One whole response with its length, not a
-        stream: the set is small, and a stream that stopped short — a proxy compressing it,
-        the connection dropping — reached the browser as "Failed to fetch" with nothing to
-        say why."""
-        body = "".join(cloud.export_samples(since, account_id or None)).encode()
+        stream: a stream that stopped short (a proxy compressing it, the connection dropping)
+        reached the browser as "Failed to fetch" with nothing to say why. The lines are
+        written to a temporary file in a thread, over the read-only connection, and the file
+        is sent and removed: the set is hundreds of thousands of turns, far too many to
+        build in memory, and far too slow a read to run on the loop."""
         name = f"nanomuse-samples-{account_id[:8]}-{since}" if account_id else f"nanomuse-samples-{since}"
-        return Response(
-            body,
+        reads = cloud.reads
+
+        def write() -> str:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".jsonl", delete=False) as f:
+                for line in reads.export_samples(since, account_id or None):
+                    f.write(line)
+                return f.name
+
+        path = await asyncio.to_thread(write)
+        return FileResponse(
+            path,
             media_type="application/x-ndjson",
-            headers={
-                "Content-Disposition": f'attachment; filename="{name}.jsonl"',
-                "Cache-Control": "no-store",
-                "Content-Length": str(len(body)),
-            },
+            filename=f"{name}.jsonl",
+            headers={"Cache-Control": "no-store"},
+            background=BackgroundTask(_unlink_quietly, path),
         )
+
+    @app.get("/v1/admin/client-events", dependencies=[Depends(admin_dep)])
+    async def admin_client_events(account_id: str = "", kind: str = "", since: int = 0, limit: int = 200, before: int = 0) -> dict:
+        """What the apps reported around turns (0.31), newest first; `kind` is a comma list,
+        `before` the id of the last row shown."""
+        reads = cloud.reads
+        return {
+            "events": await asyncio.to_thread(reads.admin_client_events, account_id or None, _kinds(kind), since, limit, max(0, before)),
+            "total": await asyncio.to_thread(reads.db.client_event_count, account_id or None),
+            "kinds": list(provenance.KNOWN_EVENTS),
+        }
+
+    @app.get("/v1/admin/client-events/export", dependencies=[Depends(admin_dep)])
+    async def admin_client_events_export(since: int = 0, account_id: str = "") -> Response:
+        """The apps' reports as JSON lines, each with the account's `subject` pseudonym and
+        the turn's id, so they join the training set's lines; no account id."""
+        name = f"nanomuse-client-events-{account_id[:8]}-{since}" if account_id else f"nanomuse-client-events-{since}"
+        return StreamingResponse(
+            cloud.reads.export_client_events(since, account_id or None),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="{name}.jsonl"', "Cache-Control": "no-store"},
+        )
+
+    @app.get("/v1/admin/client-events/summary", dependencies=[Depends(admin_dep)])
+    async def admin_client_events_summary(days: int = 30) -> dict:
+        """By day and kind: how many reports and from how many accounts, and what the
+        Sentinel decided, how approvals went, why replies were stopped and how the thumbs
+        fell over the period. Figures only."""
+        return await asyncio.to_thread(cloud.reads.client_events_summary, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/deletions", dependencies=[Depends(admin_dep)])
+    async def admin_deletions(since: int = 0) -> dict:
+        """The deletions ledger (0.31): the `subject` pseudonym of every account that deleted
+        its kept data (`samples`) or itself (`account`) since the time given, oldest first.
+        A training set built from an export drops those subjects' lines in its next build."""
+        return {"deletions": await asyncio.to_thread(cloud.reads.deletions_since, max(0, since))}
 
     @app.get("/v1/admin/sync", dependencies=[Depends(admin_dep)])
     async def admin_sync() -> dict:
@@ -1767,14 +2466,14 @@ def create_app(
     async def admin_stats(days: int = 30) -> dict:
         """Every metric of stats.py with its rows for the last `days` UTC days (1–365), its
         columns and how it is computed."""
-        return stats.all(max(1, min(days, 365)))
+        return await asyncio.to_thread(stats.all, max(1, min(days, 365)))
 
     @app.get("/v1/admin/stats/{metric_id}.csv", dependencies=[Depends(admin_dep)])
     async def admin_stat_csv(metric_id: str, days: int = 30) -> Response:
         m = stats.metric(metric_id)
         if m is None:
             raise CloudError(404, "not_found", "No such metric")
-        text = stats.csv(m, max(1, min(days, 365)))
+        text = await asyncio.to_thread(stats.csv, m, max(1, min(days, 365)))
         return Response(text, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{m.id}.csv"'})
 
     @app.get("/v1/admin/stats/{metric_id}", dependencies=[Depends(admin_dep)])
@@ -1782,7 +2481,49 @@ def create_app(
         m = stats.metric(metric_id)
         if m is None:
             raise CloudError(404, "not_found", "No such metric")
-        return stats.build(m, max(1, min(days, 365)))
+        return await asyncio.to_thread(stats.build, m, max(1, min(days, 365)))
+
+    # -- 0.28: the live view and the analytics pages (analytics.py) --------------------------------
+
+    @app.get("/v1/admin/live", dependencies=[Depends(admin_dep)])
+    async def admin_live() -> dict:
+        """The model endpoint right now: the provider gate (active, waiting, limit), the
+        requests under way with their phase and age, the hub, per-minute throughput and
+        latency for the last hour, the last ten minutes and the hour in summary, the newest
+        calls. Memory only; the page polls it every few seconds."""
+        return analytics.live()
+
+    @app.get("/v1/admin/analytics/usage", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_usage(days: int = 30) -> dict:
+        """Per local day and model: requests, tokens, money, accounts (the matrix)."""
+        return await asyncio.to_thread(analytics.usage, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/analytics/day", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_day(day: int = 0) -> dict:
+        """One local day in full (`day` is any UNIX time in it; now by default): by hour and
+        model, by platform, how the calls went and how long they took, the errors' reasons,
+        the accounts that cost most."""
+        return await asyncio.to_thread(analytics.day, int(day) if day else int(time.time()))
+
+    @app.get("/v1/admin/analytics/platforms", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_platforms(days: int = 30) -> dict:
+        return await asyncio.to_thread(analytics.platforms, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/analytics/cohorts", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_cohorts(days: int = 14) -> dict:
+        return await asyncio.to_thread(analytics.cohorts, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/analytics/hands", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_hands(days: int = 30) -> dict:
+        return await asyncio.to_thread(analytics.hands, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/analytics/quality", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_quality(days: int = 30) -> dict:
+        return await asyncio.to_thread(analytics.quality, max(1, min(days, 365)))
+
+    @app.get("/v1/admin/analytics/abuse", dependencies=[Depends(admin_dep)])
+    async def admin_analytics_abuse(days: int = 30) -> dict:
+        return with_places(await asyncio.to_thread(analytics.abuse, max(1, min(days, 365))))
 
     @app.get("/v1/admin/nudges", dependencies=[Depends(admin_dep)])
     async def admin_nudges_get() -> dict:
@@ -1867,6 +2608,19 @@ def create_app(
         if not isinstance(obj, dict):
             raise CloudError(400, "bad_request", "Body must be a JSON object")
         return obj
+
+    def _reply_message(obj: object) -> dict:
+        """The assistant's message of a non-streamed reply, whole (content, reasoning, tool
+        calls, finish_reason) — what the record keeps."""
+        if isinstance(obj, dict):
+            for ch in obj.get("choices") or []:
+                msg = ch.get("message") if isinstance(ch, dict) else None
+                if isinstance(msg, dict):
+                    out = dict(msg)
+                    if ch.get("finish_reason"):
+                        out["finish_reason"] = str(ch["finish_reason"])
+                    return out
+        return {"role": "assistant", "content": _reply_text(obj)}
 
     def _reply_text(obj: object) -> str:
         """The assistant's words in a non-streamed reply (choices[].message.content)."""

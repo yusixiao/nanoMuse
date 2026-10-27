@@ -31,11 +31,13 @@ from nanomuse.cloud import CLOUD_KEY, CloudClient, CloudError, model_url
 from nanomuse.hub import actions
 from nanomuse.hub.client import HubClient, HubError, IncomingCall
 from nanomuse.hub.profile import ProfileSync
+from nanomuse.llm import session as llm_session
 from nanomuse.logger import logger
 from nanomuse.schema import RiskLevel
 from nanomuse.sentinel.grants import grant_key, normalize_scope
 from nanomuse.server.events import MAIN_THREAD, STOPPED_NOTICE, now_iso
 from nanomuse.server.webui import current_thread
+from nanomuse.telemetry import telemetry
 from nanomuse.triggers.store import arrivals
 from nanomuse.ui import ApprovalRequest
 
@@ -89,6 +91,12 @@ class HubService:
         # the agent's name and look, shared with the account's other devices
         self.profile = ProfileSync(self)
         self._ensure_identity()
+        # every call to the relay says which device it came from and which run it was in;
+        # what happens around turns (and turns on the person's own key) goes up through
+        # the same client while the account is signed in (nanomuse.telemetry)
+        llm_session.set_device(self.device_id)
+        llm_session.set_cloud_base(self.settings.cloud.base_url)
+        telemetry.install(self.cloud, self._key)
 
     # ------------------------------------------------------------------ settings & identity
     @property
@@ -157,6 +165,7 @@ class HubService:
         if self.signed_in:
             # the look the account's other devices wear, when it moved while we were away
             self.profile.pull_soon()
+        telemetry.start()
 
     def _model_has_no_key(self) -> bool:
         """True when the configured model would be called with no key at all — not a local
@@ -217,6 +226,7 @@ class HubService:
         in that order, so that nothing is still talking to the relay when its client goes."""
         await self.leave()
         await self.profile.stop()
+        await telemetry.stop()
         await self.cloud.close()
 
     async def join(self) -> None:
@@ -237,10 +247,28 @@ class HubService:
             on_state=self._hub_state_changed,
             on_profile=self.profile.on_frame,
             on_sync=self.svc.sync.on_frame,
+            llm=self.llm_ids,
         )
         self.client.start()
         self._sync_tools(True)
         self.publish()
+
+    def llm_ids(self) -> tuple[str, str]:
+        """The ids this device runs its chat model under, for `hello` (relay 0.28): the
+        provider is ``cloud`` when the slot is the relay's models, else the catalogue entry
+        the slot means (``bailian``, ``openrouter``) or its protocol; then the model id.
+        Plain ids, never the URL or the key."""
+        llm = self.svc.settings.llm
+        provider = llm.provider
+        if llm.base_url and llm.base_url.rstrip("/") == model_url(self.cloud.base_url):
+            provider = "cloud"
+        else:
+            connections = getattr(self.svc, "connections", None)
+            catalogue_id = (
+                connections._catalogue_id(llm.provider, llm.base_url) if connections else ""
+            )
+            provider = catalogue_id or provider
+        return provider, llm.model
 
     async def leave(self) -> None:
         client, self.client = self.client, None
@@ -491,6 +519,7 @@ class HubService:
         was_model = self._llm_is_cloud()
         self.svc.app.vault.delete(CLOUD_KEY)
         self.cloud.api_key = ""
+        telemetry.forget()
         cloud = dict(self.data.get("cloud") or {})
         for key in ("hint", "channel", "signed_in_at", "has_password", "account_id", "region"):
             cloud.pop(key, None)
@@ -698,7 +727,12 @@ class HubService:
             ok = self.svc.decide(approval_id, bool(call.args.get("allow")), "once")
             await call.result({"ok": ok})
             return
-        if not self.settings.hub.remote_control and call.action != "info":
+        if not self.settings.hub.remote_control:
+            if call.action == "info":
+                # the device is seen, not operated: its name and system, nothing a caller
+                # would need to drive it (docs/hub.md)
+                await call.result(actions.info(operable=False))
+                return
             await call.fail(
                 "not_allowed", f"{self.device_name} is set not to be operated from other devices"
             )
@@ -914,7 +948,11 @@ class HubService:
 
     def _incoming_thread(self, call: IncomingCall, conversation: str) -> Thread:
         for t in self.svc.threads.values():
-            if t.remote_from and t.remote_from.get("conversation") == conversation:
+            if (
+                t.remote_from
+                and t.remote_from.get("device") == call.sender_id
+                and t.remote_from.get("conversation") == conversation
+            ):
                 return t
         thread = self.svc.create_thread(f"From {call.sender_name}")
         thread.remote_from = {
@@ -991,17 +1029,22 @@ class HubService:
         elif etype == "approval":
             if status == "pending" and fresh:
                 self._relayed_approvals[str(ev.get("id") or "")] = call.sender_id
-                await call.event(
-                    {
-                        "stage": "approval",
-                        "approval_id": ev.get("id"),
-                        "preview": ev.get("summary", ""),
-                        "risk": ev.get("risk", "moderate"),
-                        "reason": "; ".join(ev.get("warnings") or ev.get("reasons") or []),
-                        "device": self.device_name,
-                        "timeout": int(self.settings.server.approval_timeout),
-                    }
-                )
+                body = {
+                    "stage": "approval",
+                    "approval_id": ev.get("id"),
+                    "preview": ev.get("summary", ""),
+                    "risk": ev.get("risk", "moderate"),
+                    "reason": "; ".join(ev.get("warnings") or ev.get("reasons") or []),
+                    "device": self.device_name,
+                    "timeout": int(self.settings.server.approval_timeout),
+                }
+                # what a remembered answer on the asking device covers: the same key the
+                # Sentinel's own grants use (the tool and its target), never the preview,
+                # whose first words two different steps can share
+                key = str(ev.get("grant_key") or "").strip()
+                if key:
+                    body["grant_key"] = key
+                await call.event(body)
             elif status in ("approved", "denied", "expired") and not fresh:
                 # answered here (or timed out): the caller's card closes too
                 self._relayed_approvals.pop(str(ev.get("id") or ""), None)

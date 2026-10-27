@@ -27,6 +27,7 @@ from nanomuse.config import (
     Settings,
     find_config_file,
     load_settings,
+    read_toml,
     unknown_keys,
 )
 
@@ -93,8 +94,10 @@ def _root(
 ) -> None:
     """nanoMuse: an open-source personal agent for every device you own. This is its runtime: the agent, the Sentinel that decides what may run, and the web app."""
     from nanomuse import loopback
+    from nanomuse.stdio import utf8_console
 
     loopback.install()  # Windows: a self-pipe that fails with a reason instead of hanging
+    utf8_console()  # a console whose code page is not UTF-8 still prints the report
 
 
 ConfigOpt = Annotated[Path | None, typer.Option("--config", "-c", help="Path to config.toml")]
@@ -110,7 +113,7 @@ def _settings(config: Path | None, auto: bool = False) -> Settings:
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         where = find_config_file(config)
         console.print(f"[red]config.toml is not valid TOML[/red] ({where}): {exc}")
         raise typer.Exit(1) from exc
@@ -249,10 +252,16 @@ async def _slash(cmd: str, muse) -> bool:  # noqa: ANN001
         return True
     if name == "help":
         console.print(
-            "/reset – clear conversation   /memory – list memories   /goals – list goals\n"
-            "/audit [n] – recent audit entries   /tools – list tools   /tainted – taint status\n"
-            "/permissions – what you allowed   /revoke <key> – take one back\n"
-            "/forget-approvals – clear every granted permission   /exit – quit"
+            "/reset             clear the conversation\n"
+            "/memory            list memories\n"
+            "/goals             list goals\n"
+            "/audit [n]         the last n audit entries (10)\n"
+            "/tools             list tools\n"
+            "/tainted           taint status\n"
+            "/permissions       what you allowed\n"
+            "/revoke <key>      take one back\n"
+            "/forget-approvals  clear every granted permission\n"
+            "/exit              quit"
         )
     elif name == "reset":
         muse.agent.reset()
@@ -1642,9 +1651,8 @@ async def _doctor(settings: Settings, check_model: bool) -> None:
     line(settings.source != "defaults+env" or None, f"config: {settings.source}")
     if settings.source and settings.source != "defaults+env":
         try:
-            with open(settings.source, "rb") as fh:
-                stray = unknown_keys(tomllib.load(fh))
-        except (OSError, tomllib.TOMLDecodeError):
+            stray = unknown_keys(read_toml(Path(settings.source)))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
             stray = []
         if stray:
             shown = ", ".join(stray[:6]) + (" …" if len(stray) > 6 else "")

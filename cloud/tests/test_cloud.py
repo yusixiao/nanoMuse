@@ -20,6 +20,9 @@ from nanomuse_cloud.identifiers import BadIdentifier, parse
 from nanomuse_cloud.senders import LogSender
 from nanomuse_cloud.service import Cloud, CloudError
 
+# the tests call the models as one of the apps would; `apps_only` (0.28) refuses other software
+APP_UA = {"User-Agent": "nanoMuse/0.0 (tests)"}
+
 PNG_1PX = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 
@@ -252,7 +255,7 @@ def stack():
     sender = LogSender()
     cloud = Cloud(settings, Database(":memory:"), sender)
     app = create_app(settings, cloud, upstream_transport=httpx.ASGITransport(app=up))
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test", headers=APP_UA)
     return app, client, sender, up, cloud
 
 
@@ -297,7 +300,7 @@ async def test_hosted_default_is_one_multimodal_chat_model_and_retires_media(mon
     sender = LogSender()
     cloud = Cloud(settings, Database(":memory:"), sender)
     app = create_app(settings, cloud, upstream_transport=httpx.ASGITransport(app=up))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test", headers=APP_UA) as client:
         me = await sign_up(client, sender)
         headers = {"Authorization": f"Bearer {me['api_key']}"}
         listed = (await client.get("/v1/models", headers=headers)).json()["data"]
@@ -359,7 +362,7 @@ async def test_retired_media_is_hidden_when_an_old_environment_still_lists_it():
     sender = LogSender()
     cloud = Cloud(settings, Database(":memory:"), sender)
     app = create_app(settings, cloud, upstream_transport=httpx.ASGITransport(app=up))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test", headers=APP_UA) as client:
         assert (await client.get("/healthz")).json()["models"] == expected
         signed_in = await sign_up(client, sender)
         headers = {"Authorization": f"Bearer {signed_in['api_key']}"}
@@ -665,11 +668,15 @@ async def test_pictures_are_drawn_a_couple_at_a_time(stack):
     accounts = (await client.get("/v1/admin/accounts", headers={"X-Admin-Token": "admin"})).json()["accounts"]
     await client.post("/v1/admin/grant", headers={"X-Admin-Token": "admin"}, json={"account_id": accounts[0]["id"], "tokens": 1_000_000})
     in_flight = {"now": 0, "peak": 0}
+    # the provider answers nobody until the test says so: the four admitted requests cannot
+    # settle and free a slot before the two refused ones have been counted, however slow
+    # the runner (a timed sleep here let a sixth request in after the first had finished)
+    release = asyncio.Event()
 
     async def slow(request: Request):
         in_flight["now"] += 1
         in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
-        await asyncio.sleep(0.05)
+        await release.wait()
         in_flight["now"] -= 1
         return {"output": {"choices": [{"message": {"content": [{"image": "http://upstream/pic.png"}]}}]}}
 
@@ -679,12 +686,19 @@ async def test_pictures_are_drawn_a_couple_at_a_time(stack):
     ]
     up.add_api_route("/ds/api/v1/services/aigc/multimodal-generation/generation", slow, methods=["POST"])
 
-    rs = await asyncio.gather(
-        *(
+    tasks = [
+        asyncio.ensure_future(
             client.post("/v1/images/generations", headers=headers, json={"model": "qwen-image-3.0", "prompt": f"dragon {i}"})
-            for i in range(6)
         )
-    )
+        for i in range(6)
+    ]
+    # the two turned away at the door are the only ones that can finish before the release
+    for _ in range(500):
+        if sum(t.done() for t in tasks) >= 2:
+            break
+        await asyncio.sleep(0.01)
+    release.set()
+    rs = await asyncio.gather(*tasks)
     # four of one account's requests may be under way at once (MAX_IN_FLIGHT); the two
     # over that are told so rather than queued
     assert sorted(r.status_code for r in rs) == [200] * 4 + [429] * 2
@@ -785,7 +799,7 @@ def make_stack(**overrides):
     sender = LogSender()
     cloud = Cloud(settings, Database(":memory:"), sender)
     app = create_app(settings, cloud, upstream_transport=httpx.ASGITransport(app=up))
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test", headers=APP_UA)
     return app, client, sender, up, cloud
 
 
@@ -1065,7 +1079,7 @@ async def test_unlimited_relay_meters_but_never_refuses():
     sender = LogSender()
     cloud = Cloud(settings, Database(":memory:"), sender)
     app = create_app(settings, cloud, upstream_transport=httpx.ASGITransport(app=up))
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://cloud.test", headers=APP_UA)
     data = await sign_up(client, sender)
     assert data["tokens"]["unlimited"] is True and data["tokens"]["granted"] == 0
     headers = {"Authorization": f"Bearer {data['api_key']}"}
@@ -1484,16 +1498,15 @@ async def test_the_catalog_asks_each_model_whether_it_answers_and_sees():
 
 
 async def test_the_thinking_default_follows_what_the_request_already_says():
-    """The shipped default (`enable_thinking: false`) saves reasoning tokens — but an app that
-    sets a thinking level sends `reasoning_effort`, and Model Studio refuses that next to
-    `enable_thinking: false`. The relay reads what the request says about reasoning, in any
-    of the dialects, and sets the default accordingly."""
+    """Model Studio and vLLM use different switches; neither default may override the app."""
     from nanomuse_cloud.api import apply_chat_defaults, thinking_requested
 
     d = {"enable_thinking": False}
     for body, wants in (
         ({}, None),
         ({"enable_thinking": True}, True),
+        ({"chat_template_kwargs": {"enable_thinking": True}}, True),
+        ({"chat_template_kwargs": {"enable_thinking": False}}, False),
         ({"thinking": {"type": "enabled"}}, True),
         ({"thinking": {"type": "disabled"}}, False),
         ({"thinking": True}, True),
@@ -1518,6 +1531,29 @@ async def test_the_thinking_default_follows_what_the_request_already_says():
     explicit: dict = {"enable_thinking": True, "reasoning_effort": "low"}
     apply_chat_defaults(explicit, d)
     assert explicit == {"enable_thinking": True, "reasoning_effort": "low"}
+
+    # A Qwen model behind vLLM reads the switch from its chat template kwargs. Defaults
+    # under that object merge with caller kwargs and follow a generic reasoning choice.
+    template_defaults = {"chat_template_kwargs": {"enable_thinking": False, "foo": "default"}}
+    template_silent: dict = {"model": "m"}
+    apply_chat_defaults(template_silent, template_defaults)
+    assert template_silent["chat_template_kwargs"] == {"enable_thinking": False, "foo": "default"}
+    template_effort: dict = {
+        "reasoning_effort": "medium",
+        "chat_template_kwargs": {"foo": "caller"},
+    }
+    apply_chat_defaults(template_effort, template_defaults)
+    assert template_effort["chat_template_kwargs"] == {
+        "enable_thinking": True,
+        "foo": "caller",
+    }
+    assert template_defaults["chat_template_kwargs"]["enable_thinking"] is False
+    template_off: dict = {
+        "chat_template_kwargs": {"enable_thinking": False},
+        "reasoning_effort": "high",
+    }
+    apply_chat_defaults(template_off, template_defaults)
+    assert template_off["reasoning_effort"] == "none"
 
     # end to end: the request that used to come back 400 goes through
     app, client, sender, up, cloud = make_stack(catalog_probe=False)
@@ -1544,6 +1580,12 @@ async def test_an_upstream_refusal_is_written_down_with_the_providers_words():
     )
     assert upstream_detail("chat", 502, "m", b"<html>bad gateway</html>") == "chat 502 m"
     assert upstream_detail("chat", 400, "m", b'{"message": "plain\\nlines"}') == "chat 400 m: plain lines"
+    # Gemini's OpenAI-compatible endpoint wraps its error in a list
+    gemini = b'[{"error":{"code":400,"message":"Unknown name \\"store\\": Cannot find field.","status":"INVALID_ARGUMENT"}}]'
+    assert upstream_detail("chat", 400, "gemini-3.1-flash-lite", gemini) == (
+        'chat 400 gemini-3.1-flash-lite: Unknown name "store": Cannot find field.'
+    )
+    assert upstream_detail("chat", 400, "m", b"[]") == "chat 400 m"
 
     app, client, sender, up, cloud = make_stack(catalog_probe=False)
     data = await sign_up(client, sender, identifier="13800138000", device="pixel")
@@ -1585,6 +1627,11 @@ def test_a_content_check_refusal_is_said_plainly():
     # an ordinary 400 still passes the provider's own words through, as before
     assert relay_error_body(400, other)["error"] == {"message": "Model not exist.", "type": "upstream", "code": "upstream_400"}
     assert relay_error_body(429, other)["error"]["code"] == "upstream_busy"
+    # a 400 wrapped in a list (Gemini's OpenAI-compatible endpoint) passes its words through too,
+    # instead of the generic sentence that sent people hunting for a key (#611)
+    gemini = b'[{"error":{"code":400,"message":"Unknown name \\"store\\": Cannot find field.","status":"INVALID_ARGUMENT"}}]'
+    assert relay_error_body(400, gemini)["error"]["message"] == 'Unknown name "store": Cannot find field.'
+    assert relay_error_body(400, b"[1, 2]")["error"]["message"] == "The model provider refused the request"
 
 
 async def test_a_content_check_refusal_is_counted_apart_from_upstream_errors(stack):
@@ -1837,8 +1884,19 @@ async def test_data_controls_keep_the_training_view_only_and_are_deletable(stack
     assert first["request"][2] == {"role": "tool", "tool_call_id": "c1", "content": "", "omitted": True}
     dumped = json.dumps(first)
     assert "AAAA" not in dumped and "Ada" not in dumped and "SECRET" not in dumped
-    # 0.10: the address goes with the turn for the operator (the test client has none)
-    assert first["meta"] == {"ua": "nanoMuse-Android/0.1.27", "lang": "zh-CN", "ip": first["meta"]["ip"]}
+    # 0.10: the address goes with the turn for the operator (the test client has none);
+    # 0.31: the kept turn says where it came from — the relay's model (`cloud`), the record's
+    # id for it, the script of what the person wrote — and nothing of who started it when
+    # the app did not say (no X-NanoMuse-Run header here)
+    assert first["meta"] == {
+        "ua": "nanoMuse-Android/0.1.27",
+        "lang": "zh-CN",
+        "ip": first["meta"]["ip"],
+        "source": "cloud",
+        "turn_id": first["meta"]["turn_id"],
+        "script": "latin",
+    }
+    assert len(first["meta"]["turn_id"]) == 16 and "run" not in first["meta"]
     assert first["platform"] == "android"
     assert first["prompt_tokens"] == 100 and first["completion_tokens"] == 50
     account = (await client.get(f"/v1/admin/accounts/{data['account']['id']}", headers=admin)).json()["account"]
@@ -1854,7 +1912,7 @@ async def test_data_controls_keep_the_training_view_only_and_are_deletable(stack
     assert dv["by_model"][0]["tokens"] == dv["period"]["prompt_tokens"] + dv["period"]["completion_tokens"] > 0
     assert sorted(dv["by_platform"], key=lambda x: x["platform"]) == [
         {"platform": "android", "samples": 1},
-        {"platform": "other", "samples": 1},
+        {"platform": "runtime", "samples": 1},
     ]
     assert [s["response"] for s in dv["recent"]] == ["你好，世界", "hi"] and dv["recent"][0]["hint"] == data["account"]["hint"]
     # the export has no account ids
@@ -1869,9 +1927,15 @@ async def test_data_controls_keep_the_training_view_only_and_are_deletable(stack
     r = await client.post("/v1/chat/completions", headers=headers, json={"model": "qwen3.8-27b", "messages": msgs})
     assert (await client.get("/v1/admin/samples", headers=admin)).json()["total"] == 2
     assert (await client.get("/v1/me", headers=headers)).json()["contribute"]["samples"] == 2
+    # 0.29: the same tap deletes the record — every turn (the four made here, whatever the
+    # switch said) and the one picture only this account referenced
+    await asyncio.gather(*app.state.record_tasks)
+    me = (await client.get("/v1/me", headers=headers)).json()
+    assert me["contribute"]["record"] == {"on": True, "turns": 4, "own": 0, "files": 1, "media_bytes": 3, "keep_days": 0}
     r = await client.delete("/v1/me/samples", headers=headers)
-    assert r.json() == {"deleted": 2}
+    assert r.json() == {"deleted": 2, "turns": 4, "files": 1}
     assert (await client.get("/v1/me", headers=headers)).json()["contribute"]["samples"] == 0
+    assert (await client.get("/v1/me", headers=headers)).json()["contribute"]["record"]["turns"] == 0
     kinds = [e["kind"] for e in (await client.get("/v1/me/events", headers=headers)).json()["events"]]
     assert {"contribute.on", "contribute.off", "contribute.deleted"} <= set(kinds) and "contribute.default" not in kinds
     dv = (await client.get("/v1/admin/data?days=1", headers=admin)).json()

@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from nanomuse.llm import session as llm_session
 from nanomuse.logger import logger
 from nanomuse.prompts import split_quiet
 from nanomuse.schema import ToolCall, ToolResult
@@ -152,6 +153,13 @@ class WebUI:
         card = self._browser_card.pop(thread, None)
         if card is not None:
             self.patch(thread, card, status="done", updated_ts=now_iso())
+        # a bubble still streaming when the run ended without a message (the model call
+        # failed after its first words, the person stopped it): closed here, so it does
+        # not sit open in the page or take the next run's words
+        sid = self._stream_ids.pop(thread, None)
+        self._stream_buf.pop(thread, None)
+        if sid is not None:
+            self.bus.publish({"kind": "stream_end", "thread": thread, "id": sid, "discard": True})
 
     # ------------------------------------------------------------------ browser view
     def on_browser_frame(self, frame: BrowserFrame) -> None:
@@ -383,6 +391,20 @@ class WebUI:
         self._stream_buf[thread] = self._stream_buf.get(thread, "") + text
         self.bus.publish({"kind": "delta", "thread": thread, "id": sid, "text": text})
 
+    def on_reasoning_delta(self, text: str) -> None:
+        # live thinking, streamed to the bubble but never persisted on its own:
+        # the final assistant event carries the full reasoning for the "Show thinking" fold
+        if not text or not self.show_thinking:
+            return
+        thread = self.thread()
+        sid = self._stream_ids.get(thread)
+        if sid is None:
+            sid = new_id("a")
+            self._stream_ids[thread] = sid
+            self._stream_buf[thread] = ""
+            self.bus.publish({"kind": "stream_start", "thread": thread, "id": sid, "ts": now_iso()})
+        self.bus.publish({"kind": "reasoning_delta", "thread": thread, "id": sid, "text": text})
+
     def on_assistant_message(self, content: str | None, reasoning: str | None) -> None:
         thread = self.thread()
         sid = self._stream_ids.pop(thread, None)
@@ -411,6 +433,13 @@ class WebUI:
             event["reasoning"] = reasoning.strip()
         if thread in self.model_once:
             event["model_used"] = self.model_once[thread]
+        # the turn in the account's record this reply came from, so a thumb on the bubble
+        # can name it (``turn_source`` "own" when the turn ran on the person's own key)
+        turn_id, turn_source = llm_session.last_turn()
+        if turn_id:
+            event["turn"] = turn_id
+            if turn_source == "own":
+                event["turn_source"] = "own"
         self.last_assistant_text[thread] = text
         self._step_text[thread] = text
         self.last_assistant_event[thread] = self.emit(event)["id"]

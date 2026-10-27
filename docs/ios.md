@@ -9,7 +9,7 @@ were written on a Linux machine. The app **builds, signs and is on TestFlight**:
 0.1.31 (2), went through the *iOS · TestFlight* workflow on 2026-10-03; 1.0.0 is build 16, which
 passed Apple's beta review, so the public link
 (`https://testflight.apple.com/join/ZHexbDqc`) installed it first; 1.0.1 is build 18 and 1.0.2 is build 19, both through the review
-since 2026-10-12; 1.0.3 is build 22 and 1.0.4 is build 26, both through the review since 2026-10-13, so the link installs build 26 today; 1.0.5 is build 28, submitted on 2026-10-14 (*Where it stands* below). Builds 20 and 21 (1.0.2), 23, 24 and 25 (1.0.3 with fixes merged after the tag) and 27 (1.0.4 the same way) went to the internal testers only. The testers' reports have driven the fixes in the release
+since 2026-10-12; 1.0.3 is build 22 and 1.0.4 is build 26, both through the review since 2026-10-13, so the link installs build 26 today; 1.0.5 is build 28, submitted on 2026-10-14; 1.0.6 is build 29, built from the tag `v1.0.6` and uploaded on 2026-10-24 (*Where it stands* below). Builds 20 and 21 (1.0.2), 23, 24 and 25 (1.0.3 with fixes merged after the tag) and 27 (1.0.4 the same way) went to the internal testers only. The testers' reports have driven the fixes in the release
 notes (the composer, onboarding, sign-out); the Devices section and notifications from other
 devices still have the fewest hours on a real device. The first archive taught the pipeline
 that automatic signing wants a registered device, which is why it signs manually now.
@@ -89,6 +89,17 @@ Ours, in `NanoMuse/`:
 - **The agent's steps, the status line.** *Settings → Chat → Steps* keeps the tool capsules out of
   finished messages unless asked for; the typing line reads *〈name〉 is on it*, not *is thinking*.
   Both are one-line edits in upstream's `AssistantBlockView` / `ContentView`, marked `// nanoMuse:`.
+- **The wait under the dots (1.0.8; `NanoMuseStreamStatus.swift`).** While a step has no first
+  token, `NanoMuseWaitLine` under the typing line says nothing for ten seconds, then *The model is
+  busy, 15 s so far* with *Cancel* (the chat's stop); when nanoMuse Cloud has said the request is
+  waiting for one of its provider slots (relay 0.31's `nanomuse: {phase, ahead}` chunks,
+  [cloud.md](cloud.md#protocol)), *3 ahead of you* or *You are next* instead. One marked line in
+  each OpenAI provider's SSE loop hands the field over; one in `ChatMessageViews` draws the line.
+- **The prompt budget (1.0.8; `NanoMuseContextBudget.swift`, `NanoMusePromptDiet.swift`).** The
+  compaction line is 32k tokens on every window from 64k up (upstream's tiers put it 20k short of
+  the window), old big tool results go to disk from 28k, and the `browser_use` schema is worded
+  densely with every action and parameter kept; the Android page has the figures behind it. The
+  three call sites in `AIChatViewModel` are marked; the policy's own tiers and tests are untouched.
 - **The Muse shell (0.1.33; iPad too since 0.1.34).** `NanoMuseRoot` replaces upstream's
   `ContentView` at the root; *Settings → nanoMuse* has the two switches (*Muse home*, *Face and
   name in the chat header*), and the OpenMinis layout stays one tap away in the drawer. The chat's
@@ -146,7 +157,7 @@ Ours, in `NanoMuse/`:
   with progress, steps, pause / check now / done / delete, and the routines beneath.
 - **Feed (0.1.34)** (`NanoMuseFeed.swift`, Android `feed/`): a daily routine writes a few short
   posts from the memory, the diary and the goals into `feed/<day>/<n>.md` with front matter; the
-  ` ```nanomuse-feed ` fence is how the model hands them over. The Feed room shows them by day,
+  ` ```nanomuse-feed ` fence is how the model hands them over. The Feed room shows them by day, a day's newest batch first,
   *Discuss* opens a side chat on the post, the sliders hold what the feed is about, the time, the
   switch and *Write it now*. **Ideas** gained *Create routine* (scheduled at the idea's time, the
   editor opens) and *Start goal* beside *Send to chat*.
@@ -161,17 +172,17 @@ Ours, in `NanoMuse/`:
   `coding.*` actions, a message to any of them), **Scheduled tasks**, **System files** (SOUL,
   GLOBAL, the diary, the feed's instruction, the routines' schedule, *Import memory* from another
   assistant), Connectors, Data controls, the two shell switches, *Show the welcome again*.
-- **Models (0.1.34)** (`NanoMuseModels.swift`): the relay's menu opens on `deepseek-v4.1-flash`
-  (the one marked recommended *for chat*; `qwen3.8-27b` is the hands' model and never the chat
-  default); a pick made in the chat's picker moves to the front of the Cloud group so new chats
+- **Models (0.1.34)** (`NanoMuseModels.swift`): the relay's menu opens on the model marked
+  recommended *for chat*; the hosted relay currently recommends the same multimodal
+  `Qwen/Qwen3.6-27B-FP8` for chat and screen operation. A pick made in the chat's picker moves to the front of the Cloud group so new chats
   follow it, as Android's `followPick`. DeepSeek ids are text-only unless they name `v4.1` or
   later, `vision` or `ocr`: a `// nanoMuse:` step at the top of `LLMModel.withInferredModality()`.
 - **Models as four slots (0.1.41)** (`NanoMuseModelSlots.swift`, `NanoMuseModelsView.swift`;
   Android `ui/models/ModelsScreen.kt`): the first card of *Settings → nanoMuse* is *Models* and
   opens four rows: *Chat*, *Operating the screen* (disabled on iPhone, *Not on iPhone*, *Your
   computer uses its own setting.*), *Making pictures*, *Making clips*, each showing
-  `<provider> · <model>` and opening a picker grouped *nanoMuse Cloud* first (the relay's
-  recommended one marked *Recommended*) and then one group per provider of your own that can do
+  `<provider> · <model>` and opening a picker grouped *nanoMuse Cloud* first only when the
+  relay's live menu covers that row (with its recommendation marked *Recommended*) and then one group per provider of your own that can do
   it; an empty row says what is missing and offers *Add a provider*, and so does the page's last
   row; under the pictures and clips pickers a key the catalogue says can draw but the phone
   cannot drive (`NanoMuseModelSlots.notDriven`: only a DashScope host is) is named in one
@@ -182,9 +193,9 @@ Ours, in `NanoMuse/`:
   side chats answered through the key); the page says *Applies to the main chat and to new
   chats; a side chat keeps its model.*; a pick made in a chat's own picker sticks the same way,
   for any provider, not only Cloud. Pictures and clips resolve in one order (your choice, else the chat
-  provider's own default when it is a Model Studio key that draws, else nanoMuse Cloud when
-  signed in, else the first key that can), so Cloud is no longer passed over for a Bailian key
-  you did not pick; the image and video models come from the catalogue's `defaults`, not from
+  provider's own default when it is a Model Studio key that draws, else a signed-in relay only
+  when its live menu offers the media kind, else the first key that can). The hosted Cloud
+  offers no media generation, so these rows require a key of your own; the image and video models come from the catalogue's `defaults`, not from
   names in the code. The pictures and clips pickers open with an *Automatic* entry (*Currently
   〈provider · model〉*) that forgets the stored choice and lets the slot follow that order
   again; the clips picker keeps *Off* under it. A group shows at most eight rows (the
@@ -196,10 +207,11 @@ Ours, in `NanoMuse/`:
   After a key is saved, `NanoMuseVendorSheet` shows *Use it for*: one switch
   per slot the key covers (pictures and clips only on a DashScope host, the screen never on
   iPhone), all on; *Use it* moves the ticked slots to the provider's defaults, *Not now* changes
-  nothing, and saving no longer switches anything by itself. When a model of your own fails, the
-  failure card (and upstream's plain error) gains *Use nanoMuse Cloud this time* while signed
-  in: the retry runs on the relay's chat model (`NanoMuseCloudOnce`, read at the top of
-  `resolveCurrentEntry()`), and no slot changes. The relay's menu is kept on the phone at sign-in
+  nothing, and saving no longer switches anything by itself. When a chat model of your own
+  fails, the failure card (and upstream's plain error) gains *Use nanoMuse Cloud this time*
+  while signed in: the retry runs on the relay's chat model (`NanoMuseCloudOnce`, read at the
+  top of `resolveCurrentEntry()`), and no slot changes. Media failures have no Cloud retry.
+  The relay's menu is kept on the phone at sign-in
   and refreshed when the page opens. *Image & video models* stays as a shortcut with the animate
   toggle and the clip buttons.
 - **Connections across devices (0.1.34)** (`NanoMuseSharedConnectors` in
@@ -216,8 +228,33 @@ Ours, in `NanoMuse/`:
   and the client-id ask with the callback address to copy for the eight services that register no
   clients. The Settings row that was *MCP Integrations* is **Connectors**; *Your own servers* at
   its end is upstream's MCP page.
-- **Data controls** (`NanoMuseDataControls.swift`): the relay's switch, the kept-turns count, the
-  privacy page, deletion with a confirmation. **Reach** (`NanoMuseReach.swift`): a sheet per device
+- **Data controls** (`NanoMuseDataControls.swift`): what the relay's record holds of the account
+  (turns, those on your own keys, pictures, how long this relay keeps a turn; relay 0.29), the
+  training-set switch with its count, the privacy page, one deletion with a confirmation that
+  removes the record and the training turns together. From 1.0.7 the phone takes part in the
+  record itself ([cloud.md](cloud.md#the-record)): its chat requests to the account carry
+  `X-NanoMuse-Device` and `X-NanoMuse-Conversation` (`NanoMuseCloudHeaders.swift`), a turn
+  answered on a key of your own goes up afterwards with its pictures as files
+  (`NanoMuseOwnTurns.swift`, wrapping the agent provider; never the key or the base URL), the
+  hub's hello names what answers new chats (`device.llm`), and the face's clips travel with the
+  face through the profile's `clips` (`NanoMuseProfile.swift`: a clip drawn here is put up for
+  the other devices, theirs land in the motion folder, so a face is animated once per account).
+  **Where a call sits, and what happened around it** (relay 0.31; `NanoMuseProvenance.swift`,
+  `NanoMuseClientEvents.swift`, `NanoMuseFeedback.swift`, `NanoMuseGateEvents.swift`): a chat
+  request to the account also says who started the turn (`X-NanoMuse-Run`: you, a routine, the
+  feed, a goal's check, a task another device asked for through the hub), the turn's number as
+  the chat counts it, the call's number within the turn and `X-NanoMuse-Platform: ios`; a turn on
+  a key of your own goes up with the same fields ([cloud.md](cloud.md#provenance)). The agent
+  loop's provider is wrapped once more for this, and the headless runs (`NanoMuseHeadless.run`)
+  name their kind, so a typed message, a retry, a routine's prompt and a hub task all say the
+  same. While signed in, the phone also sends short records of what happened around a turn
+  (`POST /v1/events`): what the permission check decided on each `apple-*` command and how its
+  sheet was answered, a turn stopped by hand or ended in an error, and the two thumbs under the
+  newest reply and the one question after a Stop (*Why did you stop it?*, five one-word answers
+  and *Skip*; both sit above the composer; a routine's or another device's turn is not asked
+  about). Codes and numbers only: the command's name, its class, who answered, how long; never
+  its arguments or any words of the conversation ([cloud.md](cloud.md#client-events)); *Data
+  controls*' delete removes them with the turns. **Reach** (`NanoMuseReach.swift`): a sheet per device
   of the account (open a link, send a note, a shell line, a screenshot) over the hub.
   **A task for another device** (`NanoMuseDeviceMention.swift`, `NanoMuseRemoteApproval.swift`):
   a message that starts with `@〈device〉` goes to that device's Muse as a hub `task` (the `@` menu
@@ -328,8 +365,9 @@ Ours, in `NanoMuse/`:
 - **Motion clips (0.1.35)** (`NanoMuseVideoGen.swift`, `NanoMuseAvatarMotion.swift`,
   `NanoMuseMediaModels.swift`; Android `avatar/VideoGen.kt`, `avatar/AvatarMotion.kt`): a drawn
   face gets four 4-second clips (idle, working, waiting, happy) from `wan2.2-i2v-flash`
-  (DashScope's async API through the relay, or your own Bailian key), the phone's prompts word
-  for word, kept per device under `avatar/motion/`; the face plays them with an `AVQueuePlayer`
+  through your own Bailian key (or a self-hosted relay whose operator explicitly enabled the
+  legacy media proxy; the public Cloud does not), the phone's prompts word for word, kept per
+  device under `avatar/motion/`; the face plays them with an `AVQueuePlayer`
   and an `AVPlayerLooper` (suspended in the background), the dragon's clips come from the bundle.
   *Image & video models* lists the models, *Animate the avatar after a change* (on by default)
   and *Make / Redo clips*; the studio's cost estimate counts the clips.
@@ -404,7 +442,9 @@ Ours, in `NanoMuse/`:
   /v1/sync/working {cid, working}` after the user line is pushed and after the turn's end is;
   the hub's `working` frame and `/v1/sync/state`'s `working` list fill a map that expires after
   ten minutes, and the chat shows *〈device〉 is working…* under the last message when it is
-  another device's user line (`ChatMessage.nmWorkingDevice`). A remote user line as the tail is
+  another device's user line (`ChatMessage.nmWorkingDevice` holds the sentence; with the frame's
+  `state` and `detail`, relay 0.31, it reads *〈device〉 is working: 〈step〉* or *〈device〉 is
+  waiting for you*, `NanoMusePresence.sentence`). A remote user line as the tail is
   never this phone's interrupted turn: `recheckCanResumeFromHistory` leaves `canResume` off for
   it, so no banner, no Resume, nothing re-sent.
 - **Sign-in and the relay (0.1.38)** (`NanoMuseCloud.swift`, `NanoMuseCloudView.swift`,
@@ -747,8 +787,12 @@ when either grows past its ceiling.
 Distribution is TestFlight, **internal testers**: the people you add as users of your App Store
 Connect team (up to 100), who get every build minutes after it is processed, with no App Review.
 An external group (public link, up to 10,000 testers) needs Apple's beta review once per version;
-the group *nanoMuse Beta* and its public link exist, and each build is added to it and submitted
-for review after the internal testers have had it. The pipeline is the same either way.
+the group *nanoMuse Beta* and its public link exist. A build is handed to it by the *iOS · Beta
+group* workflow (`.github/workflows/ios-beta-external.yml`, *Run workflow*, the build number from
+the TestFlight run and a "What to Test" note; an empty build number takes the newest): the
+`external` lane of the Fastfile adds the build to the group, writes the note and submits it for
+the beta review, with the three App Store Connect secrets and nothing else. The testers are
+notified when the review has passed. The pipeline is the same either way.
 
 ### Where it stands
 
@@ -781,7 +825,7 @@ Set up on 2026-10-03, all of it under the account holder's developer account (te
   2026-10-09 and passed it, so the public link installs it (build 14, 0.1.41, was what the link
   delivered before); build 17, 1.0.0 with the fixes merged after the tag, went to the internal
   testers only. **Build 18 (1.0.1)** was added to *nanoMuse Beta* and submitted to the review on
-  2026-10-10 and **build 19 (1.0.2)** on 2026-10-11; both passed on 2026-10-12, so the link installs build 19. **Build 22 (1.0.3)** was submitted on 2026-10-12 and **build 26 (1.0.4)** on 2026-10-13; both passed on 2026-10-13, so the link installs build 26. **Build 28 (1.0.5)** was submitted on 2026-10-14; builds 23, 24 and 25 (1.0.3 with fixes merged after the tag) and 27 (1.0.4 the same way) went to the internal testers only. The public link delivers a build only
+  2026-10-10 and **build 19 (1.0.2)** on 2026-10-11; both passed on 2026-10-12, so the link installs build 19. **Build 22 (1.0.3)** was submitted on 2026-10-12 and **build 26 (1.0.4)** on 2026-10-13; both passed on 2026-10-13, so the link installs build 26. **Build 28 (1.0.5)** was submitted on 2026-10-14. **Build 29 (1.0.6)** was uploaded on 2026-10-24 from the tag `v1.0.6` and reaches the internal testers first; it goes to the public link once it is added to *nanoMuse Beta* and its review has passed. Builds 23, 24 and 25 (1.0.3 with fixes merged after the tag) and 27 (1.0.4 the same way) went to the internal testers only. The public link delivers a build only
   once a review has passed, and each new version repeats the step (the review is per version;
   later builds of an approved version need none).
   Nothing towards the App Store: the app is not going there.
@@ -892,7 +936,7 @@ what became of it here:
 | `community.StarPrompt`, `community.Nudges`: the star asks from the relay's policy | Done (0.1.35): `NanoMuseNudges.swift`, `NanoMuseStar` (the moments, the cooldown and the cap from `/v1/nudges`) |
 | `community.UpdateCheck`, the Version row | Done (0.1.35): `NanoMuseUpdateCheck.swift` (installed and latest, `nanomuse.cn/dl/index.json` then GitHub) |
 | `avatar.VideoGen`, `avatar.AvatarMotion`: the motion clips | Done (0.1.35): `NanoMuseVideoGen.swift`, `NanoMuseAvatarMotion.swift`, `NanoMuseMediaModels.swift` |
-| `nm.show_steps`: the agent's steps, on by default since 0.1.37 | 0.1.32: `NanoMuseSteps.swift`; finished messages keep to the conversation, a running one shows its steps |
+| `nm.show_steps`: the agent's steps, on by default since 0.1.37 | 0.1.32: `NanoMuseSteps.swift`; finished messages keep to the conversation, including after the main chat is reset or restored on launch; a running one shows its steps |
 | `connectors`: the catalogue, `SharedConnectors` | Done: `NanoMuseConnectors.swift` (0.1.33 the catalogue, 0.1.34 the other devices' entries) |
 | `ui.home`, `ui.chat`, `ui.settings`, `ui.profile`: the shell, header, agent page | Done: `NanoMuseShell.swift`, `NanoMuseHeader.swift`, `NanoMuseAgentPage.swift`, `NanoMuseSettings.swift`; 0.1.35 the Muse header on every room, the settings as Muse cards (`NanoMuseChrome.swift`, `NanoMuseAppearance.swift`) |
 | `avatar`: the drawn face, the chat-driven change, the studio | Done (0.1.34): `NanoMuseAvatarFlow.swift`, `NanoMuseAvatarStudio.swift`, `NanoMuseImageGen.swift` |
@@ -902,8 +946,9 @@ what became of it here:
 | `hands`: the phone's own screen | No equivalent: iOS does not let an app drive another. App Intents / Shortcuts are the door there |
 | Widgets | Upstream's `AgentWidget` as it is |
 
-Still to check on a device, in order: the first run end to end with a fresh account; a chat-driven
-avatar change through the relay and through a Bailian key, and the four clips it draws afterwards; a routine coming due with the app in
+Still to check on a device, in order: the first run end to end with a fresh account; confirm the
+hosted account's media entry points ask for an own provider, then make a chat-driven avatar change
+through a Bailian key and the four clips it draws afterwards; a routine coming due with the app in
 the background (does iOS grant the refresh on the tester's phone, and how often); a coding session
 against a computer of the account; the connectors list after a second device signs in.
 

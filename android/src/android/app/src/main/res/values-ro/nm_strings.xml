@@ -135,6 +135,9 @@
     <string name="nm_routine_paused">Oprit</string>
     <!-- The chat row a routine sent: its label and the clock time it fired -->
     <string name="nm_routine_wake_caption">Rutină · %1$s · %2$s</string>
+    <!-- One scheduled task, several times a day (GH#557) -->
+    <string name="nm_scheduled_task_add_time">Adaugă altă oră</string>
+    <string name="nm_scheduled_task_runs_scheduled_for">Programat pentru %1$s</string>
 
     <!-- Ideas tab -->
     <string name="nm_ideas_title">Idei</string>
@@ -836,16 +839,21 @@
     <string name="nm_cloud_ev_contribute_default">Controlul datelor: pornit pentru conturile noi</string>
     <string name="nm_data_title">Controlul datelor</string>
     <string name="nm_data_improve">Ajută la îmbunătățirea modelelor AI nanoMuse</string>
-    <string name="nm_data_why">Cât e pornit, textul conversațiilor tale cu modelele nanoMuse Cloud (ce ai scris, ce a răspuns și uneltele pe care a ales să le apeleze) e păstrat pe relay pentru a antrena modelul deschis al comunității. Nu memoria sau SOUL (promptul de sistem), nu ce au returnat uneltele, nu imaginile, și niciodată alături de cine ești. Propria ta cheie API nu trece niciodată prin relay.</string>
+    <string name="nm_data_why">Cât e pornit, textul acestor conversații (ce ai scris, ce a răspuns modelul și uneltele pe care a ales să le apeleze) intră și în setul de antrenare al modelului deschis al comunității: fără memoria ta sau SOUL (promptul de sistem), fără ce au returnat uneltele, fără imagini și fără cine ești. Oprit, nimic în plus nu mai intră; înregistrarea în sine rămâne până o ștergi. Schimburile cu propria ta cheie sunt în înregistrare, niciodată în setul de antrenare.</string>
+    <string name="nm_data_record_why">nanoMuse Cloud păstrează întreg fiecare schimb al conversațiilor tale cu modelele sale ca înregistrare a contului tău: ce a plecat spre model, ce a răspuns, uneltele și ce au returnat, imaginile ca fișiere. De la aplicația 1.0.7 intră și schimburile la care s-a răspuns cu propria ta cheie. Sunt datele tale: doar dispozitivele tale și cine ține relay-ul le pot citi.</string>
+    <string name="nm_data_record_held">Înregistrarea ține %1$d schimburi ale acestui cont (%2$d cu propriile tale chei), cu %3$d imagini.</string>
+    <string name="nm_data_record_empty">Înregistrarea nu ține încă nimic din acest cont.</string>
+    <string name="nm_data_record_keep_days">Acest relay păstrează un schimb %1$d zile.</string>
+    <string name="nm_data_record_keep_forever">Rămâne până o ștergi.</string>
     <string name="nm_data_default_on">Conturile noi pornesc cu el activat.</string>
     <string name="nm_data_default_off">Conturile noi pornesc cu el dezactivat.</string>
     <string name="nm_data_kept">%1$d schimburi păstrate până acum.</string>
     <string name="nm_data_on_toast">Pornit. Îl poți opri de aici oricând.</string>
-    <string name="nm_data_off_toast">Oprit. Nu se mai păstrează nimic.</string>
-    <string name="nm_data_delete">Șterge conversațiile păstrate</string>
-    <string name="nm_data_delete_sub">Elimină fiecare schimb păstrat din acest cont, indiferent dacă acum comutatorul e pornit sau oprit. Oprirea comutatorului păstrează ce era deja păstrat până ștergi aici.</string>
-    <string name="nm_data_delete_confirm">Conversațiile păstrate sunt eliminate de pe server. Nu se poate anula.</string>
-    <string name="nm_data_deleted">%1$d schimburi șterse.</string>
+    <string name="nm_data_off_toast">Oprit. Nimic în plus nu mai intră în setul de antrenare.</string>
+    <string name="nm_data_delete">Șterge înregistrarea și conversațiile păstrate</string>
+    <string name="nm_data_delete_sub">Elimină înregistrarea conversațiilor acestui cont și fiecare schimb de antrenare păstrat din ea, fie că întrerupătorul e acum pornit sau oprit. Oprirea întrerupătorului păstrează ce s-a păstrat până ștergi aici.</string>
+    <string name="nm_data_delete_confirm">Înregistrarea conversațiilor tale și schimburile de antrenare păstrate sunt eliminate de pe server. Nu se poate anula.</string>
+    <string name="nm_data_deleted">Șters: %1$d schimburi din înregistrare, %2$d fișiere, %3$d schimburi de antrenare.</string>
     <string name="nm_data_sign_in">Conectează-te la nanoMuse Cloud pentru a-l folosi.</string>
     <string name="nm_data_privacy">Politica de confidențialitate</string>
     <string name="nm_data_status_on">Pornit</string>
@@ -1053,6 +1061,8 @@
     <string name="nm_sync_side_title">Sincronizează și conversațiile secundare</string>
     <string name="nm_sync_side_sub">Oprit: conversațiile secundare rămân pe acest dispozitiv. Pornit: conversațiile secundare ale acestui dispozitiv merg în cont, iar cele ale celorlalte dispozitive vin aici.</string>
     <string name="nm_sync_working">%1$s se ocupă…</string>
+    <string name="nm_sync_working_step">%1$s se ocupă: %2$s</string>
+    <string name="nm_sync_waiting">%1$s te așteaptă</string>
     <string name="nm_devices_ask">Cere acestui dispozitiv</string>
     <string name="nm_devices_ask_hint">Atinge un dispozitiv care e online ca să-i scrii din conversație: mesajul începe cu @ și numele lui, iar acel dispozitiv face treaba.</string>
     <string name="nm_reach_the_provider">furnizorul</string>
@@ -1131,7 +1141,6 @@
     <string name="nm_cloud_provider_no_delete">Acest furnizor este contul tău nanoMuse Cloud. Oprește-l mai sus ca să nu-i mai folosești modelele; pentru deconectare, deschide Setări › nanoMuse Cloud.</string>
     <string name="nm_welcome_own_key">Folosește propria cheie API</string>
     <string name="nm_useit_title">La ce să o folosești</string>
-    <string name="nm_useit_body">Alege de ce să se ocupe această cheie. De restul se ocupă în continuare nanoMuse Cloud.</string>
     <string name="nm_useit_body_signed_out">Alege de ce să se ocupe această cheie.</string>
     <string name="nm_useit_use">Folosește</string>
     <string name="nm_useit_not_now">Nu acum</string>
@@ -1171,4 +1180,34 @@
     <string name="nm_font_scale_medium">Mediu</string>
     <string name="nm_font_scale_large">Mare</string>
     <string name="nm_font_scale_extra_large">Foarte mare</string>
+
+    <!-- nanoMuse: backup choices and the headless run (#560, #561) -->
+    <string name="nm_backup_chat_files">Fișierele din conversații</string>
+    <string name="nm_backup_chat_files_on">Fiecare atașament, fișier descărcat și fișier din spațiul de lucru pleacă împreună cu mesajele.</string>
+    <string name="nm_backup_chat_files_off">Doar mesajele. Fișierele sunt listate, nu incluse; o restaurare aduce conversațiile înapoi fără ele. Ține pachetul mic pentru un server care refuză încărcările mari.</string>
+    <string name="nm_backup_hint_too_large">Serverul a refuzat pachetul din cauza mărimii. De cele mai multe ori este limita lui de încărcare (nginx: client_max_body_size); mărește-o sau salvează conversațiile fără fișiere.</string>
+    <string name="nm_backup_delivery_failed">Livrarea a eșuat.</string>
+    <string name="nm_backup_run_needs_passphrase">Criptarea este pornită, iar fraza de acces se introduce pe pagina Backup; o rulare din shell nu o poate cere. Pornește backupul din pagină sau oprește criptarea acolo.</string>
+    <string name="nm_backup_run_started">Backup pornit din shell.</string>
+
+    <!-- The line under the typing dots while the model has not said anything yet -->
+    <string name="nm_wait_busy">Modelul este ocupat, %1$d s până acum</string>
+    <string name="nm_wait_queued">%1$d înaintea ta, %2$d s până acum</string>
+    <string name="nm_wait_next">Urmezi tu, %1$d s până acum</string>
+    <string name="nm_fb_up">Răspuns bun</string>
+    <string name="nm_fb_down">Răspuns slab</string>
+    <string name="nm_fb_why">Ce a fost greșit?</string>
+    <string name="nm_fb_reason_wrong">Greșit</string>
+    <string name="nm_fb_reason_unhelpful">Nu a ajutat</string>
+    <string name="nm_fb_reason_unsafe">Nu trebuia să facă asta</string>
+    <string name="nm_fb_reason_slow">Prea lent</string>
+    <string name="nm_fb_reason_other">Altceva</string>
+    <string name="nm_fb_skip">Omite</string>
+    <string name="nm_fb_thanks">Notat, mulțumesc</string>
+    <string name="nm_stop_why">De ce ai oprit?</string>
+    <string name="nm_stop_reason_wrong">Mergea într-o direcție greșită</string>
+    <string name="nm_stop_reason_slow">Prea lent</string>
+    <string name="nm_stop_reason_changed_mind">M-am răzgândit</string>
+    <string name="nm_stop_reason_done">Era deja gata</string>
+    <string name="nm_stop_reason_other">Altceva</string>
 </resources>

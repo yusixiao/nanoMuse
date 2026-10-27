@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import hmac
 import json
@@ -22,10 +23,13 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from . import __version__
-from .client import client_version, platform_of
+from . import __version__, provenance
+from .analytics import sample_shape
+from .client import client_version, platform_from, platform_of
 from .config import ModelSpec, Settings, menu_warnings
 from .controls import Controls
 from .crypto import IdentifierCrypto
@@ -38,11 +42,14 @@ from .nudges import merge as nudges_merge
 from .nudges import validate as nudges_validate
 from .providers import exhausted_key_line, guidance
 from .providers import provider as catalogue_provider
+from .record import BLOB_PREFIX, MediaStore, detach_media, inline_media_bytes, is_sha256, media_refs, pack, unpack
 from .senders import CodeSender, LogSender, SendError, make_sender
 
 log = logging.getLogger("nanomuse_cloud")
 
 KEY_PREFIX = "nm_"
+HUB_KINDS = ("phone", "computer", "web")
+HUB_DEVICE_ID = re.compile(r"^[A-Za-z0-9._:-]{4,80}$")
 # the settings-table key of the nudges policy (0.18, nudges.py)
 NUDGES_KEY = "nudges"
 
@@ -134,7 +141,13 @@ def _strip_binary(messages: list) -> list:
 # What a kept turn holds — the words the apps show under Data controls and the privacy
 # policy repeats. _training_view enforces them: this is a promise, not a description.
 SAMPLE_KEEPS = {
-    "kept": ["what you wrote", "what the model answered", "the tool calls it chose", "model, token counts, app and language"],
+    "kept": [
+        "what you wrote",
+        "what the model answered",
+        "the tool calls it chose",
+        "model, token counts, app and language",
+        "where the turn came from: a person or a routine, which turn and step, the relay's model or your own key",
+    ],
     "not_kept": ["the system prompt (memory, SOUL, instructions)", "what tools returned", "pictures, audio and clips", "who you are"],
 }
 
@@ -240,9 +253,6 @@ def _load_meta(text: str) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-_platform_of = platform_of  # the app behind a kept turn, from its user agent (client.py)
-
-
 @dataclass(frozen=True)
 class Caller:
     key_hash: str
@@ -262,6 +272,10 @@ class Caller:
     via: str = "code"
     key_created_at: int = 0
     key_prefix: str = ""
+    # 0.27: once set, this credential may announce only this Hub installation.
+    # Empty is a legacy credential whose first accepted hello performs the binding.
+    hub_device_id: str = ""
+    hub_device_kind: str = ""
     # Invitations (0.4): the code this person hands out and how many came.
     invite_code: str = ""
     invites: int = 0
@@ -341,6 +355,48 @@ class InFlight:
         return {account_id: len(self._live(account_id)) for account_id in list(self._held) if self._live(account_id)}
 
 
+class Pace:
+    """How many times a key may do a thing within a window: ``limit`` per ``window_s``,
+    sliding. In memory, like InFlight; a key not seen for a window is forgotten, and the
+    table is capped so a flood of keys cannot grow it without bound (0.30: the record's
+    uploads, session keys, the hub's hellos)."""
+
+    MAX_KEYS = 50_000
+
+    def __init__(self, limit: int, window_s: float, clock=time.monotonic):
+        self.limit = max(0, limit)
+        self.window_s = window_s
+        self.clock = clock
+        self._seen: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        """Count one more for ``key``; False when it is over the limit (nothing counted then).
+        A limit of 0 allows everything."""
+        if self.limit <= 0:
+            return True
+        t = self.clock()
+        edge = t - self.window_s
+        hits = self._seen.get(key)
+        if hits is None:
+            if len(self._seen) >= self.MAX_KEYS:
+                self._prune(edge)
+            hits = self._seen[key] = []
+        else:
+            while hits and hits[0] <= edge:
+                hits.pop(0)
+        if len(hits) >= self.limit:
+            return False
+        hits.append(t)
+        return True
+
+    def _prune(self, edge: float) -> None:
+        for key in [k for k, v in self._seen.items() if not v or v[-1] <= edge]:
+            del self._seen[key]
+        if len(self._seen) >= self.MAX_KEYS:  # all of them live: the oldest go
+            for key in sorted(self._seen, key=lambda k: self._seen[k][-1])[: self.MAX_KEYS // 2]:
+                del self._seen[key]
+
+
 # What a chat is reserved at while it runs: a typical turn's worth of the model, priced
 # like any other. The ledger gets the real figure once the reply is in.
 CHAT_RESERVE_PROMPT_TOKENS = 6000
@@ -378,6 +434,19 @@ class Cloud:
         self.crypto = IdentifierCrypto(settings.identifier_key)
         # 0.22: the operator's switches and thresholds (settings table, applied at once)
         self.controls = Controls(self.db, settings)
+        # 0.29: the record's files — next to the database unless MEDIA_DIR says otherwise;
+        # a relay on an in-memory database (the tests) writes them to a temporary directory
+        media_dir = settings.media_dir
+        if not media_dir and settings.database != ":memory:":
+            media_dir = str(Path(settings.database).parent / "blobs")
+        self.media = MediaStore(media_dir or None)
+        # 0.30: how fast one account may feed the record (own-key turns and files together),
+        # and how often one may mint session keys — each a credential with a hub identity
+        self.upload_pace = Pace(settings.record_uploads_per_minute, 60.0)
+        self.session_key_pace = Pace(self.SESSION_KEYS_PER_HOUR, 3600.0)
+        # 0.31: how many reports around turns one account may send a minute (requests, each
+        # of up to provenance.EVENTS_PER_REQUEST events)
+        self.event_pace = Pace(self.EVENT_REQUESTS_PER_MINUTE, 60.0)
         self._login_failures: dict[str, list[int]] = {}
         if settings.dev_mode:
             log.warning("CLOUD_SECRET is not set: development mode, identifiers hashed with a fixed key")
@@ -416,6 +485,19 @@ class Cloud:
         n = self.db.seed_allowances(settings.allowance_uy)
         if n:
             log.info("0.15: %d account(s) marked as given the ¥%.2f allowance", n, settings.allowance_cny)
+
+    @property
+    def reads(self) -> Cloud:
+        """0.30: the same service, its `db` the read-only connection (Database.reader): the
+        console's pages, the statistics and the exports run through it, in a thread (api.py),
+        so a query of seconds never holds the lock every request takes for its own few rows.
+        The methods are the same; a write through it fails with sqlite3's "readonly database",
+        which is the point. A fresh shallow copy each time, so a setting the operator changed
+        (`s`) is the one the view reads; the connection behind it is opened once. On an
+        in-memory database (the tests) the connection is the same one."""
+        view = copy.copy(self)
+        view.db = self.db.reader()
+        return view
 
     # -- settings the operator changes while the relay runs (0.15) ------------------------------
 
@@ -678,7 +760,7 @@ class Cloud:
         """Look up an account by ``ident``'s canonical hash, falling back to its
         legacy pre-canonical hash when present so existing dotted Gmail accounts
         keep matching."""
-        return self.db.account_by_hashes(ident.hashes(self.s.hmac_key))
+        return self.db.account_by_hashes(ident.hashes(self.s.hmac_key), shared=ident.merged_hash(self.s.hmac_key))
 
     def _refuse_if_signups_closed(self, ident: Identifier) -> None:
         """0.22: the *Sign-ups* switch is off; an identifier without an account is turned
@@ -761,15 +843,21 @@ class Cloud:
         self._refuse_if_domain_limited(ident)
         account = self._account_for(ident)
         disabled = account is not None and bool(account["disabled"])
-        t = now()
-        if self.db.codes_recent_for(ident.hash(self.s.hmac_key), t - 600) >= self.s.code_per_identifier_10m:
-            raise CloudError(429, "code_too_often", "Too many codes for this address; wait a few minutes")
-        if ip and self.db.codes_recent_for_ip(ip, t - 3600) >= self.s.code_per_ip_hour:
-            raise CloudError(429, "code_too_often", "Too many codes from this network; wait an hour")
         # The reviewer's code is the fixed one and goes nowhere: the row is written like
         # anyone's, so the lifetime, the attempt limit and the rate limits are the same.
         code = self.s.review_code.strip() if review else f"{secrets.randbelow(1_000_000):06d}"
-        self.db.insert_code(ident.hash(self.s.hmac_key), _code_hash(self.s.hmac_key, code), ip, self.s.code_ttl_s)
+        limited = self.db.insert_code_limited(
+            ident.hash(self.s.hmac_key),
+            _code_hash(self.s.hmac_key, code),
+            ip,
+            self.s.code_ttl_s,
+            self.s.code_per_identifier_10m,
+            self.s.code_per_ip_hour,
+        )
+        if limited == "identifier":
+            raise CloudError(429, "code_too_often", "Too many codes for this address; wait a few minutes")
+        if limited == "ip":
+            raise CloudError(429, "code_too_often", "Too many codes from this network; wait an hour")
         if review:
             log.info("review sign-in: a code request for the reviewer's address; nothing sent")
             return
@@ -785,27 +873,42 @@ class Cloud:
         try:
             self.sender.send(ident, code)
         except SendError as e:
+            if e.reason == "too_often":
+                # the carrier's own limit for the number, tighter than ours: the same answer
+                # as our limit, so the app says "wait" and not that the relay is broken
+                raise CloudError(429, "code_too_often", "Too many codes for this number; wait a few minutes") from e
             raise CloudError(502, "send_failed", f"Could not send the code ({e})") from e
 
-    def verify_code(self, ident: Identifier, code: str, device: str, invite: str = "") -> tuple[str, Caller, bool]:
+    def verify_code(
+        self,
+        ident: Identifier,
+        code: str,
+        device: str,
+        invite: str = "",
+        hub_device_id: str = "",
+        hub_device_kind: str = "",
+    ) -> tuple[str, Caller, bool]:
         """Returns (api_key, caller, created). The key is shown once. `invite` is
         a friend's code; it counts only when this sign-in creates the account."""
         if not self.allowed(ident):
             raise CloudError(403, "not_invited", "This relay is private; that address is not on its list")
         id_hash = ident.hash(self.s.hmac_key)
-        row = self.db.live_code(id_hash)
-        if row is None:
+        result = self.db.check_code(id_hash, _code_hash(self.s.hmac_key, code.strip()), self.s.code_max_attempts)
+        if result == "expired":
             raise CloudError(400, "code_expired", "The code has expired; ask for a new one")
-        attempts = self.db.bump_attempts(int(row["id"]))
-        if attempts > self.s.code_max_attempts:
-            self.db.consume_code(int(row["id"]))
-            raise CloudError(400, "code_expired", "Too many tries; ask for a new code")
-        if not secrets.compare_digest(str(row["code_hash"]).encode(), _code_hash(self.s.hmac_key, code.strip()).encode()):
+        if result == "wrong":
             raise CloudError(400, "code_wrong", "That code is not right")
-        self.db.consume_code(int(row["id"]))
-        return self.sign_in(ident, device, "code", invite)
+        return self.sign_in(ident, device, "code", invite, hub_device_id, hub_device_kind)
 
-    def sign_in(self, ident: Identifier, device: str, via: str, invite: str = "") -> tuple[str, Caller, bool]:
+    def sign_in(
+        self,
+        ident: Identifier,
+        device: str,
+        via: str,
+        invite: str = "",
+        hub_device_id: str = "",
+        hub_device_kind: str = "",
+    ) -> tuple[str, Caller, bool]:
         """An identifier that has just been proven (a code, the carrier's word) becomes a
         signed-in device: the account is made on first sight, a key is issued.
         Returns (api_key, caller, created)."""
@@ -819,9 +922,33 @@ class Cloud:
             self._refuse_if_domain_limited(ident)
             account_id = self.db.new_account_id()
             enc = self.crypto.encrypt(account_id, ident.value)
-            account = self.db.create_account(
-                id_hash, ident.channel, ident.hint, self.s.signup_tokens, enc, account_id=account_id, grant_uy=self.s.allowance_uy
+            domain = ident.value.rpartition("@")[2].lower() if ident.channel == "email" else ""
+            domain_limit = (
+                self.s.signup_per_domain_day if domain and not self.is_review(ident) and domain not in self.s.signup_domain_allow_set else 0
             )
+            account, created = self.db.create_account_limited(
+                id_hash,
+                ident.channel,
+                ident.hint,
+                self.s.signup_tokens,
+                enc,
+                account_id,
+                self.s.allowance_uy,
+                domain=domain,
+                domain_limit=domain_limit,
+                domain_since=now() - 86400,
+            )
+            if account is None:
+                self.db.add_event("", "signup.domain_limited", domain[:200])
+                raise CloudError(
+                    429,
+                    "domain_limited",
+                    "This address's domain has reached today's sign-up limit on this relay; try again tomorrow or use another address",
+                )
+            account_id = str(account["id"])
+        else:
+            account_id = str(account["id"])
+        if created:
             self.db.add_event(account_id, "account.created", ident.channel)
             if self.s.improve_default:
                 # the relay's default for a new account, said on its timeline as such (not as a
@@ -832,7 +959,14 @@ class Cloud:
         elif account["disabled"]:
             raise CloudError(403, "account_disabled", "This account is disabled")
 
-        key, caller = self._issue_key(account["id"], device, via=via)
+        key, caller = self._issue_key(
+            account["id"],
+            device,
+            via=via,
+            hub_device_id=hub_device_id,
+            hub_device_kind=hub_device_kind,
+            replace_hub_identity=bool(hub_device_id),
+        )
         self.db.add_event(account["id"], f"sign_in.{via}", device)
         if created:
             # the switches flip now; a notify rule's e-mail goes on its own thread, so this
@@ -968,14 +1102,54 @@ class Cloud:
         allowance. Kept in the shape 0.4 phones read so they show 「不限」."""
         return {"unlimited": True, "allowed": None, "used": 0, "left": None, "per_face": 4}
 
-    def _issue_key(self, account_id: str, device: str, via: str, expires_at: int | None = None) -> tuple[str, Caller]:
+    @staticmethod
+    def validate_hub_identity(device_id: str, kind: str, *, optional: bool = True) -> tuple[str, str]:
+        """Validate the identity a new credential will own.
+
+        Old clients omit both fields and bind at their first hello during the
+        compatibility release. Supplying only one is never interpreted loosely.
+        """
+        device_id = str(device_id or "")
+        kind = str(kind or "")
+        if optional and not device_id and not kind:
+            return "", ""
+        if kind not in HUB_KINDS:
+            raise CloudError(400, "bad_device", "device_kind must be phone, computer or web")
+        if not HUB_DEVICE_ID.fullmatch(device_id):
+            raise CloudError(400, "bad_device", "device_id must be 4–80 letters, digits, . _ : -")
+        return device_id, kind
+
+    def _issue_key(
+        self,
+        account_id: str,
+        device: str,
+        via: str,
+        expires_at: int | None = None,
+        hub_device_id: str = "",
+        hub_device_kind: str = "",
+        replace_hub_identity: bool = False,
+    ) -> tuple[str, Caller]:
+        hub_device_id, hub_device_kind = self.validate_hub_identity(hub_device_id, hub_device_kind)
         key = KEY_PREFIX + secrets.token_urlsafe(30)
-        self.db.insert_key(_sha256(key), key[:10], account_id, device, via=via, expires_at=expires_at)
+        self.db.insert_key(
+            _sha256(key),
+            key[:10],
+            account_id,
+            device,
+            via=via,
+            expires_at=expires_at,
+            hub_device_id=hub_device_id,
+            hub_device_kind=hub_device_kind,
+            replace_hub_identity=replace_hub_identity,
+        )
         caller = self._caller(_sha256(key))
         assert caller is not None
         return key, caller
 
     SESSION_KEY_MAX_S = 90 * 86400
+    #: session keys one account may mint an hour: a gateway starts a few containers a day,
+    #: and each key is a hub identity of its own (0.30)
+    SESSION_KEYS_PER_HOUR = 30
 
     def session_key(self, caller: Caller, device: str, ttl_s: int) -> tuple[str, int]:
         """A key that stops working on its own after `ttl_s` (at most 90 days), for a place
@@ -984,9 +1158,14 @@ class Cloud:
         requesting key is untouched (the caller revokes it if it has no further use for it).
         A session key cannot mint another: otherwise a key that lapses in an hour could
         hand itself 90 more days, and a container that leaked one would hold the account
-        for as long as it liked."""
+        for as long as it liked. The Hub identity is not fixed here: the container's
+        runtime is a `computer` of the account with an id of its own, and binds it at its
+        first hello like any credential; what a session key can never do is take an id
+        another key holds (`Database.bind_key_to_hub_device`)."""
         if caller.via == "session":
             raise CloudError(403, "session_from_session", "A session key cannot issue another session key; use the device's own key")
+        if not self.session_key_pace.allow(caller.account_id):
+            raise CloudError(429, "rate_limited", f"At most {self.SESSION_KEYS_PER_HOUR} session keys an hour for one account")
         ttl = max(60, min(int(ttl_s), self.SESSION_KEY_MAX_S))
         expires_at = now() + ttl
         key, _ = self._issue_key(caller.account_id, device or "session", via="session", expires_at=expires_at)
@@ -1040,7 +1219,15 @@ class Cloud:
         self.db.set_password(caller.account_id, "")
         self.db.add_event(caller.account_id, "password.cleared")
 
-    def login_password(self, ident: Identifier, password: str, device: str, ip: str = "") -> tuple[str, Caller]:
+    def login_password(
+        self,
+        ident: Identifier,
+        password: str,
+        device: str,
+        ip: str = "",
+        hub_device_id: str = "",
+        hub_device_kind: str = "",
+    ) -> tuple[str, Caller]:
         """Sign in on a new device with the password instead of waiting for a code."""
         if ip and self._login_failures_from(ip) >= self.s.login_fail_per_ip_hour > 0:
             raise CloudError(429, "locked", "Too many wrong passwords from this network; wait a while or sign in with a code")
@@ -1058,7 +1245,10 @@ class Cloud:
         if locked_until and int(locked_until) > now():
             raise CloudError(429, "locked", "Too many wrong passwords; wait a while or sign in with a code")
         if not account["password_hash"]:
-            raise CloudError(400, "no_password", "This account has no password yet; sign in with a code and set one under Account")
+            hash_password("x")
+            self._note_login_failure(ip)
+            self.db.add_event(account["id"], "sign_in.failed", device)
+            raise CloudError(401, "bad_credentials", "That address and password do not match")
         if not check_password(password, account["password_hash"]):
             left = self.db.login_failed(account["id"], self.s.password_max_attempts, self.s.lockout_s)
             self._note_login_failure(ip)
@@ -1071,7 +1261,14 @@ class Cloud:
             # probe with a guessed password gets the same answer as for any wrong password.
             raise CloudError(403, "account_disabled", "This account is disabled")
         self.db.login_succeeded(account["id"])
-        key, caller = self._issue_key(account["id"], device, via="password")
+        key, caller = self._issue_key(
+            account["id"],
+            device,
+            via="password",
+            hub_device_id=hub_device_id,
+            hub_device_kind=hub_device_kind,
+            replace_hub_identity=bool(hub_device_id),
+        )
         self.db.add_event(account["id"], "sign_in.password", device)
         return key, caller
 
@@ -1118,6 +1315,8 @@ class Cloud:
                 via=row["via"] or "code",
                 key_created_at=int(row["created_at"]),
                 key_prefix=row["prefix"],
+                hub_device_id=row["hub_device_id"] or "",
+                hub_device_kind=row["hub_device_kind"] or "",
                 invite_code=row["invite_code"] or "",
                 invites=int(row["invites"] or 0),
                 grant_uy=int(row["grant_uy"] or 0),
@@ -1192,7 +1391,10 @@ class Cloud:
         """The person's own request: every key stops working and nothing about them stays.
         The one line left is written across accounts (`account.deleted`, the id's first
         eight characters), which the statistics count as a deletion; it names nobody."""
+        subject = self.subject_of(caller.account_id)
+        self.purge_record(caller.account_id)
         self.db.delete_account(caller.account_id)
+        self.db.add_deletion(subject, "account")
         self.db.add_event("", "account.deleted", f"{caller.account_id[:8]} by the person")
 
     def usage(self, account_id: str, day_start: int) -> dict:
@@ -1443,6 +1645,9 @@ class Cloud:
                 "bonus_cny": 0,
                 "bonus_available": False,
                 "bonus_at": caller.contribute_bonus_at,
+                # 0.29: the record — every turn in full, whatever the switch says; the same
+                # tap deletes both
+                "record": self.record_view(caller),
             },
             "models": [m.to_public() for m in self.offered_models()],
             "base_url": self.s.public_base,
@@ -1741,6 +1946,7 @@ class Cloud:
                 "style": "",
                 "description": "",
                 "face": None,
+                "clips": None,
                 "connectors": [],
             }
         body = json.loads(row["body"] or "{}")
@@ -1758,6 +1964,8 @@ class Cloud:
             # the hash of the idle still: a device that already wears these pictures keeps
             # its own copy (and the clips it made) instead of downloading them again
             "face_id": self._face_id(row["face"]),
+            # 0.29: the face's clips as {mood: {sha256, mime, bytes}}, files at GET /v1/blobs/{sha256}
+            "clips": body.get("clips") if isinstance(body.get("clips"), dict) and body.get("clips") else None,
             # every device's connectors together (0.17); the credentials stay on each device
             "connectors": self._load_connectors(row["connectors"]),
         }
@@ -1795,8 +2003,18 @@ class Cloud:
             raise CloudError(400, "bad_request", "connectors[].id is required")
         if not out["label"]:
             out["label"] = out["id"]
-        if out["url"] and not re.match(r"^[a-z][a-z0-9+.-]*:", out["url"], re.IGNORECASE):
-            raise CloudError(400, "bad_request", "connectors[].url is a URL (scheme:...)")
+        if out["url"]:
+            if not re.match(r"^[a-z][a-z0-9+.-]*:", out["url"], re.IGNORECASE):
+                raise CloudError(400, "bad_request", "connectors[].url is a URL (scheme:...)")
+            # the public form only: a query (`?key=`), a user info (`user:secret@`) or a
+            # fragment is where a credential rides, and the relay holds none of them
+            parts = urlsplit(out["url"])
+            if parts.query or parts.fragment or parts.username or parts.password:
+                raise CloudError(
+                    400,
+                    "no_secrets_in_profile",
+                    "connectors[].url carries a query, a fragment or a user info; send scheme://host/path only",
+                )
         auth = str(raw.get("auth") or "").strip().lower()
         if auth not in self.CONNECTOR_AUTHS:
             raise CloudError(400, "bad_request", "connectors[].auth is oauth, key or open")
@@ -1929,13 +2147,50 @@ class Cloud:
             # 1.0.3 and before): the pictures go with the look, so no device reads `has_face`
             # as a face still worn
             face = ""
-        body = json.dumps(
-            {"name": name, "avatar": avatar, "emoji": emoji, "color": color, "style": style, "description": description},
-            ensure_ascii=False,
-        )
+        # 0.29: the clips a device made of the drawn face, as references to files it put up
+        # (PUT /v1/blobs), so the other devices download them instead of rendering their
+        # own. Absent keeps what is stored; null clears; they go with the face either way.
+        clips: dict | None
+        if "clips" in data:
+            clips = self._check_clips(caller, data["clips"]) if data["clips"] is not None else None
+        elif face:
+            # new pictures without a word about clips: the stored clips were of the old
+            # face and do not fit the new one (0.30; before, they stayed on)
+            clips = None
+        else:
+            clips = stored.get("clips") if isinstance(stored.get("clips"), dict) else None
+        if face == "" or avatar != "face":
+            clips = None
+        look = {"name": name, "avatar": avatar, "emoji": emoji, "color": color, "style": style, "description": description}
+        if clips:
+            look["clips"] = clips
+        body = json.dumps(look, ensure_ascii=False)
         rev = self.db.put_profile(caller.account_id, device, body, face, connectors)
+        self.db.set_blob_refs(caller.account_id, "profile", [c["sha256"] for c in (clips or {}).values()])
         self.note(caller.account_id, "profile.put", avatar)
         return {"rev": rev, "device": device}
+
+    def _check_clips(self, caller: Caller, raw: object) -> dict:
+        """``{mood: {sha256, mime, bytes}}`` — each a video the account put up itself."""
+        if not isinstance(raw, dict):
+            raise CloudError(400, "bad_request", "clips is a {mood: {sha256, mime, bytes}} map")
+        out: dict[str, dict] = {}
+        for mood, clip in raw.items():
+            if mood not in self.PROFILE_MOODS:
+                raise CloudError(400, "bad_request", f"clips has an unknown mood {str(mood)[:20]!r}")
+            if not isinstance(clip, dict):
+                raise CloudError(400, "bad_request", f"clips.{mood} is an object")
+            sha = str(clip.get("sha256") or "").lower()
+            if not is_sha256(sha):
+                raise CloudError(400, "bad_request", f"clips.{mood}.sha256 is a hex SHA-256")
+            if not self.db.blob_readable(caller.account_id, sha):
+                raise CloudError(400, "unknown_blob", f"clips.{mood} names no file this account put up")
+            row = self.db.blob(sha)
+            mime = str(clip.get("mime") or (row["mime"] if row else "") or "")[:80]
+            if not mime.startswith("video/"):
+                raise CloudError(400, "bad_request", f"clips.{mood} is not a video")
+            out[mood] = {"sha256": sha, "mime": mime, "bytes": int(row["bytes"]) if row else int(clip.get("bytes") or 0)}
+        return out
 
     def _check_face(self, face: object) -> str:
         if not isinstance(face, dict) or not face:
@@ -1963,6 +2218,7 @@ class Cloud:
 
     def delete_profile(self, caller: Caller) -> None:
         self.db.delete_profile(caller.account_id)
+        self.db.set_blob_refs(caller.account_id, "profile", [])
         self.note(caller.account_id, "profile.clear")
 
     def set_contribute(self, caller: Caller, on: bool) -> dict:
@@ -1983,12 +2239,561 @@ class Cloud:
             "bonus_granted": False,
             "bonus_available": False,
             "bonus_at": caller.contribute_bonus_at,
+            # 0.30: the record's figures too, so an app that redraws the page from this answer
+            # alone (the desktop does) keeps them
+            "record": self.record_view(caller),
         }
 
-    def delete_samples(self, caller: Caller) -> int:
+    def delete_samples(self, caller: Caller) -> dict:
+        """The one tap under Data controls: the training turns and, since 0.29, the record
+        with them — every turn kept of this account and every file only it referenced."""
         n = self.db.delete_samples(caller.account_id)
-        self.note(caller.account_id, "contribute.deleted", f"{n} conversations")
-        return n
+        turns, files = self.purge_record(caller.account_id)
+        # 0.31: the deletions ledger names the export's pseudonym for this account, so a
+        # training set built from an earlier export drops its lines (docs/cloud.md "Deletions")
+        self.db.add_deletion(self.subject_of(caller.account_id), "samples")
+        self.note(caller.account_id, "contribute.deleted", f"{n} conversations, {turns} turns, {files} files")
+        return {"deleted": n, "turns": turns, "files": files}
+
+    def subject_of(self, account_id: str) -> str:
+        """The pseudonym the exports carry for an account (provenance.subject_of under the
+        relay's secret): the same in every export, so one person's lines group and can be
+        dropped together; meaningless without the secret."""
+        return provenance.subject_of(self.s.hmac_key.decode("utf-8", "replace"), account_id)
+
+    # -- 0.29: the record — every turn in full, its pictures as files -------------------------
+
+    RECORD_SOURCES = ("cloud", "own")
+    #: an uploaded turn's `messages` and `response` together, as JSON characters
+    TURN_MAX_CHARS = 2_000_000
+    #: what a device may hand the relay as a file: pictures, audio and the avatar's clips
+    BLOB_MIMES = ("image/", "audio/", "video/")
+
+    def record_turn(
+        self,
+        caller: Caller,
+        model: str,
+        body: dict,
+        message: dict,
+        usage: Usage | None,
+        *,
+        request_id: str,
+        meta: dict | None,
+        status: str = "ok",
+        device: str = "",
+        conversation: str = "",
+        source: str = "cloud",
+        ts: int | None = None,
+        provenance_: dict | None = None,
+    ) -> str | None:
+        """The turn as it happened, written after it is answered (api.py hands it to a thread:
+        the pictures are decoded, hashed and written to the store there). ``body`` is the
+        request as the relay sent it to the provider, less the relay's own fields (`user`,
+        `stream_options`) and with the model named as the app knows it; ``message`` is the
+        assistant's message, whole or put together from the stream. A no-op with
+        RECORD_TURNS=0. Answers the turn's id. ``provenance_`` is who started the turn
+        and where it sits (provenance.clean), kept in the row's own columns (0.31)."""
+        if not self.s.record_turns:
+            return None
+        req = {k: v for k, v in body.items() if k not in ("user", "stream_options")}
+        req["model"] = model
+        media: list[dict] = []
+        if isinstance(req.get("messages"), list):
+            req["messages"], media = detach_media(req["messages"], self.media)
+            # files the client put up beforehand and named by reference (an own-key turn):
+            # counted with the turn and referenced by it like the ones taken out just now
+            known = {m["sha256"] for m in media}
+            for sha in sorted(media_refs(req["messages"]) - known):
+                row = self.db.blob(sha)
+                if row is not None:
+                    media.append({"sha256": sha, "mime": str(row["mime"]), "bytes": int(row["bytes"])})
+        meta = dict(meta or {})
+        if media:
+            meta["media"] = media
+        response = {"message": message}
+        if usage is not None:
+            response["usage"] = {"prompt_tokens": usage.prompt, "completion_tokens": usage.completion, "cached_tokens": usage.cached}
+        where = provenance.clean(provenance_ or {})
+        if where["platform"]:
+            meta["platform"] = where["platform"]
+        row = {
+            "id": request_id,
+            "account_id": caller.account_id,
+            "ts": ts or now(),
+            "model": model[:120],
+            "platform": platform_from(meta),
+            "device": device[:80],
+            "conversation": conversation[:80],
+            "source": source if source in self.RECORD_SOURCES else "cloud",
+            "status": status,
+            "request": pack(req),
+            "response": pack(response),
+            "prompt_tokens": usage.prompt if usage else 0,
+            "completion_tokens": usage.completion if usage else 0,
+            "cached_tokens": min(usage.cached, usage.prompt) if usage else 0,
+            "meta": json.dumps(meta, ensure_ascii=False),
+            "run": where["run"],
+            "turn_no": where["turn"],
+            "step": where["step"],
+            "trajectory": where["trajectory"],
+            "trajectory_step": where["trajectory_step"],
+            "script": provenance.script_of(provenance.last_user_text(req.get("messages"))),
+        }
+        self.db.add_turn(row, media)
+        return request_id
+
+    #: the fields of an uploaded turn that are about the turn, not part of the request
+    OWN_TURN_FIELDS = ("response", "provider", "ts", "conversation", "id", "device", "status", "ended", *provenance.FIELDS)
+
+    def add_own_turn(self, caller: Caller, data: dict, *, meta: dict, device: str, headers: dict | None = None) -> dict:
+        """A turn a client ran on a key of its own (1.0.7 on), sent up afterwards in the same
+        shape the relay keeps: ``model``, ``messages`` (pictures inline as data URLs, or as
+        ``blob:sha256:`` references to files put up with PUT /v1/blobs first), ``response``
+        (the assistant's message and, when known, the usage), and ``provider``, ``ts``,
+        ``conversation``, ``id`` as the client has them; since 0.31 also ``run``, ``turn``,
+        ``step``, ``trajectory``, ``trajectory_step`` and ``platform`` (provenance.py; the
+        request's X-NanoMuse headers fill in what the body leaves out). 400 for a shape the
+        relay cannot keep; a reference to a file the account never put up is refused the
+        same way. With the account's switch on, the turn's training view is kept too, as
+        for a turn the relay answered itself: a turn is a turn whichever key ran it."""
+        if not self.s.record_turns:
+            raise CloudError(404, "not_found", "This relay keeps no record of turns (RECORD_TURNS=0)")
+        self._upload_allowed(caller)
+        model = str(data.get("model") or "").strip()
+        messages = data.get("messages")
+        response = data.get("response")
+        if not model or len(model) > 120:
+            raise CloudError(400, "bad_request", "model is required (at most 120 characters)")
+        if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) for m in messages):
+            raise CloudError(400, "bad_request", "messages is a non-empty list of message objects")
+        if not isinstance(response, dict) or not isinstance(response.get("message"), dict):
+            raise CloudError(400, "bad_request", "response is an object with the assistant's `message`")
+        if len(json.dumps(messages, ensure_ascii=False)) + len(json.dumps(response, ensure_ascii=False)) > self.TURN_MAX_CHARS:
+            raise CloudError(413, "too_large", f"a turn is at most {self.TURN_MAX_CHARS} characters of JSON")
+        for sha in media_refs(messages) | media_refs(response):
+            if not self.db.blob_readable(caller.account_id, sha):
+                raise CloudError(400, "unknown_blob", f"{BLOB_PREFIX}{sha} names no file this account put up")
+        self._room_for(caller, inline_media_bytes(messages))
+        turn_id = str(data.get("id") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", turn_id):
+            turn_id = secrets.token_hex(8)
+        turn_id = f"own-{caller.account_id[:8]}-{turn_id}"[:96]
+        ts = data.get("ts")
+        t = int(ts) if isinstance(ts, (int, float)) and 0 < ts < 4_102_444_800 else now()
+        usage_in = response.get("usage") if isinstance(response.get("usage"), dict) else None
+        usage: Usage | None = None
+        if usage_in is not None:
+            usage = Usage(
+                max(0, int(usage_in.get("prompt_tokens") or 0)),
+                max(0, int(usage_in.get("completion_tokens") or 0)),
+                max(0, int(usage_in.get("cached_tokens") or 0)),
+            )
+        body = {k: v for k, v in data.items() if k not in self.OWN_TURN_FIELDS}
+        provider = str(data.get("provider") or "")[:60]
+        meta = {**meta, "provider": provider} if provider else dict(meta)
+        where = provenance.from_body(data, headers or {})
+        status = "partial" if data.get("status") == "partial" else "ok"
+        # 0.30: why a partial turn ended short, in the client's word (`aborted`: the person
+        # stopped it; `error`: the stream broke; `abandoned`: it never finished) — the
+        # operator reads the figure, as for the relay's own turns (api.py: `ended`)
+        ended = data.get("ended")
+        if status == "partial" and isinstance(ended, str) and re.fullmatch(r"[a-z_]{1,32}", ended):
+            meta["ended"] = ended
+        message = {k: v for k, v in response["message"].items() if k != "usage"}
+        conversation = str(data.get("conversation") or "")[:80]
+        self.record_turn(
+            caller,
+            model,
+            body,
+            message,
+            usage,
+            request_id=turn_id,
+            meta=meta,
+            status=status,
+            device=device,
+            conversation=conversation,
+            source="own",
+            ts=t,
+            provenance_=where,
+        )
+        if caller.contribute and status == "ok":
+            sample_meta = {k: v for k, v in meta.items() if k in ("ua", "lang", "ip", "provider")}
+            sample_meta.update(self.sample_provenance("own", turn_id, where, messages, conversation=conversation))
+            self.keep_sample(
+                caller,
+                model,
+                messages,
+                provenance.text_of(message.get("content")),
+                usage.prompt if usage else -1,
+                usage.completion if usage else -1,
+                sample_meta,
+                message=message,
+            )
+        return {"id": turn_id, "ts": t}
+
+    @staticmethod
+    def sample_provenance(source: str, turn_id: str, where: dict, messages: Any, *, conversation: str = "") -> dict:
+        """What a kept turn's meta says about where it came from (0.31): its source (the
+        relay's model or the client's own key), the record's id for it, who started it and
+        where it sits, and the script of what the person wrote. Only what was said is kept."""
+        out: dict[str, Any] = {"source": source, "turn_id": turn_id}
+        if conversation:
+            out["conversation"] = conversation
+        out.update(provenance.said(where))
+        script = provenance.script_of(provenance.last_user_text(messages))
+        if script:
+            out["script"] = script
+        return out
+
+    # -- 0.31: what the apps report around a turn (docs/cloud.md "Client events") -------------
+
+    EVENT_REQUESTS_PER_MINUTE = 60
+
+    def add_client_events(self, caller: Caller, events: Any, *, platform: str, device: str) -> dict:
+        """The events of one POST /v1/events: each cleaned to codes and numbers
+        (provenance.clean_event), stamped with the account, the device and the platform,
+        and tied to the record's turn when the app named it (an own-key turn's id is the
+        app's, so it is normalised to the record's `own-<account>-<id>` form). One the
+        relay will not keep is dropped and counted, not refused. Answers {kept, dropped}."""
+        if not isinstance(events, list):
+            raise CloudError(400, "bad_request", "events is a list of {kind, ts?, turn?, conversation?, data}")
+        if len(events) > provenance.EVENTS_PER_REQUEST:
+            raise CloudError(413, "too_large", f"at most {provenance.EVENTS_PER_REQUEST} events in one request; send the rest in another")
+        if not self.event_pace.allow(caller.account_id):
+            raise CloudError(
+                429, "rate_limited", f"At most {self.EVENT_REQUESTS_PER_MINUTE} reports a minute from one account; send the rest later"
+            )
+        t = now()
+        own = f"own-{caller.account_id[:8]}-"
+        rows: list[dict[str, Any]] = []
+        dropped = 0
+        for e in events:
+            c = provenance.clean_event(e)
+            if c is None:
+                dropped += 1
+                continue
+            turn_id = c["turn_id"]
+            if turn_id and len(turn_id) <= 64 and not turn_id.startswith("own-") and isinstance(e, dict) and e.get("source") == "own":
+                turn_id = (own + turn_id)[:96]
+            rows.append(
+                {
+                    "account_id": caller.account_id,
+                    "ts": c["ts"] or t,
+                    "device": device[:80],
+                    "platform": platform[:16],
+                    "kind": c["kind"],
+                    "turn_id": turn_id,
+                    "conversation": c["conversation"],
+                    "data": json.dumps(c["data"], ensure_ascii=False, sort_keys=True),
+                }
+            )
+        kept = self.db.add_client_events(rows)
+        return {"kept": kept, "dropped": dropped}
+
+    def _event_view(self, r: sqlite3.Row, *, subject: bool = False) -> dict:
+        try:
+            data = json.loads(r["data"]) if r["data"] else {}
+        except ValueError:
+            data = {}
+        d: dict[str, Any] = {
+            "id": int(r["id"]),
+            "ts": int(r["ts"]),
+            "device": r["device"],
+            "platform": r["platform"],
+            "kind": r["kind"],
+            "turn_id": r["turn_id"],
+            "conversation": r["conversation"],
+            "data": data,
+        }
+        if subject:
+            d["subject"] = self.subject_of(str(r["account_id"]))
+        else:
+            d["account_id"] = r["account_id"]
+        return d
+
+    def admin_client_events(
+        self, account_id: str | None = None, kinds: tuple[str, ...] | None = None, since: int = 0, limit: int = 200, before: int = 0
+    ) -> list[dict]:
+        return [self._event_view(r) for r in self.db.client_events(account_id, list(kinds or ()), since, limit, before)]
+
+    def export_client_events(self, since: int = 0, account_id: str | None = None):
+        """The apps' reports as JSON lines with the `subject` pseudonym, oldest first within
+        each page read newest first — a reader sorts by id if the order matters."""
+        before = 0
+        while True:
+            rows = self.db.client_events(account_id, None, since, 1000, before)
+            if not rows:
+                return
+            for r in rows:
+                yield json.dumps(self._event_view(r, subject=True), ensure_ascii=False) + "\n"
+            before = int(rows[-1]["id"])
+
+    #: the `data` keys whose values the summary counts, per kind — codes, never free text
+    EVENT_FACETS = {
+        "sentinel.decision": ("decision", "risk"),
+        "approval.result": ("allow", "scope", "by"),
+        "turn.stopped": ("reason",),
+        "turn.feedback": ("vote", "reason"),
+        "turn.ended": ("ended",),
+        "hands.step": ("outcome",),
+    }
+
+    def client_events_summary(self, days: int = 30) -> dict:
+        """Figures over ``days``: reports per day and kind, accounts reporting, and the
+        split of each kind's codes (what the Sentinel decided, how approvals went, why
+        replies were stopped, how the thumbs fell). Reads the rows of the period in pages;
+        never a message, there is none to read."""
+        t = now()
+        off = self.s.day_offset_h * 3600
+        since = self.s.day_start(t) - 86400 * max(0, days - 1)
+        by_day: dict[int, dict[str, int]] = {}
+        kinds: dict[str, int] = {}
+        for r in self.db.client_events_summary(since, off):
+            day = int(r["day"])
+            by_day.setdefault(day, {})[str(r["kind"])] = int(r["n"])
+            kinds[str(r["kind"])] = kinds.get(str(r["kind"]), 0) + int(r["n"])
+        facets: dict[str, dict[str, dict[str, int]]] = {}
+        before = 0
+        for _ in range(200):  # at most 200k rows read for the split; enough for a month
+            rows = self.db.client_events(None, list(self.EVENT_FACETS), since, 1000, before)
+            if not rows:
+                break
+            for r in rows:
+                try:
+                    data = json.loads(r["data"]) if r["data"] else {}
+                except ValueError:
+                    continue
+                for key in self.EVENT_FACETS.get(str(r["kind"]), ()):
+                    if key in data and data[key] is not None:
+                        bucket = facets.setdefault(str(r["kind"]), {}).setdefault(key, {})
+                        v = str(data[key]).lower()[:32]
+                        bucket[v] = bucket.get(v, 0) + 1
+            before = int(rows[-1]["id"])
+        return {
+            "period": {"days": days, "since": since},
+            "total": sum(kinds.values()),
+            "accounts": int(self.db.client_events_accounts(since)),
+            "kinds": kinds,
+            "days": [{"day": since + i * 86400, **by_day.get(since + i * 86400, {})} for i in range(days)],
+            "facets": facets,
+        }
+
+    def deletions_since(self, since: int = 0) -> list[dict]:
+        return [{"subject": r["subject"], "ts": int(r["ts"]), "scope": r["scope"]} for r in self.db.deletions(since)]
+
+    def put_blob(self, caller: Caller, data: bytes, mime: str) -> dict:
+        """A file a device puts up for a turn or the avatar's clips: stored once by its
+        hash, readable by this account from now on. Answers the hash, the size and whether
+        the file was already here (a device need not send what another one did)."""
+        if not self.s.record_turns:
+            raise CloudError(404, "not_found", "This relay keeps no files (RECORD_TURNS=0)")
+        self._upload_allowed(caller)
+        mime = (mime or "").split(";")[0].strip().lower()[:80]
+        if not any(mime.startswith(p) for p in self.BLOB_MIMES):
+            raise CloudError(400, "bad_request", "a file is a picture, an audio clip or a video (Content-Type image/*, audio/*, video/*)")
+        if not data:
+            raise CloudError(400, "bad_request", "an empty file")
+        if len(data) > self.s.blob_max_bytes:
+            raise CloudError(413, "too_large", f"a file is at most {self.s.blob_max_bytes // (1024 * 1024)} MB")
+        sha = hashlib.sha256(data).hexdigest()
+        if not self.db.blob_readable(caller.account_id, sha):  # a file the account already holds costs it nothing more
+            self._room_for(caller, len(data))
+        sha, new = self.media.put(data)
+        self.db.add_blob(sha, mime, len(data), caller.account_id, "upload")
+        return {"sha256": sha, "bytes": len(data), "mime": mime, "known": not new}
+
+    def _upload_allowed(self, caller: Caller) -> None:
+        """One more upload from this account this minute (RECORD_UPLOADS_PER_MINUTE), or 429."""
+        if not self.upload_pace.allow(caller.account_id):
+            raise CloudError(
+                429,
+                "rate_limited",
+                f"At most {self.s.record_uploads_per_minute} turns and files a minute go up from one account; send the rest later",
+            )
+
+    def _room_for(self, caller: Caller, more: int) -> None:
+        """Room for ``more`` bytes of files: under the account's cap (MEDIA_ACCOUNT_MAX_MB)
+        and under the store's (MEDIA_MAX_GB), both checked before anything is written. The
+        store's cap is what the hourly trim keeps to; here it stops a flood from filling
+        the disk in the hour between two trims."""
+        if more <= 0:
+            return
+        cap = int(self.s.media_max_gb * 1024**3)
+        if cap > 0 and self.db.blobs_bytes() + more > cap:
+            raise CloudError(507, "store_full", "The relay's file store is full for now; the file was not taken")
+        account_cap = self.s.media_account_max_mb * 1024 * 1024
+        if account_cap > 0 and self.db.account_blob_bytes(caller.account_id) + more > account_cap:
+            raise CloudError(
+                413,
+                "quota_exceeded",
+                f"This account's files would pass {self.s.media_account_max_mb} MB on the relay; delete the record or send fewer pictures",
+            )
+
+    def blob_for(self, sha: str, caller: Caller | None = None) -> tuple[Path, str] | None:
+        """The file's path and type — for the account that holds a reference to it, or for
+        the operator (no caller). None when it is unknown, unreadable to this account, or
+        trimmed from the store."""
+        if not is_sha256(sha):
+            return None
+        row = self.db.blob(sha)
+        if row is None or not self.media.has(sha):
+            return None
+        if caller is not None and not self.db.blob_readable(caller.account_id, sha):
+            return None
+        return self.media.path(sha), str(row["mime"] or "application/octet-stream")
+
+    def _turn_view(self, r: sqlite3.Row, with_hint: bool = False) -> dict:
+        meta = _load_meta(r["meta"])
+        d = {
+            "id": r["id"],
+            "account_id": r["account_id"],
+            "ts": int(r["ts"]),
+            "model": r["model"],
+            "platform": r["platform"] or platform_of(str(meta.get("ua") or "")),
+            "device": r["device"],
+            "conversation": r["conversation"],
+            "source": r["source"],
+            "status": r["status"],
+            "request": unpack(r["request"]),
+            "response": unpack(r["response"]),
+            "prompt_tokens": int(r["prompt_tokens"]),
+            "completion_tokens": int(r["completion_tokens"]),
+            "media": int(r["media"]),
+            "media_bytes": int(r["media_bytes"]),
+            "meta": meta,
+        }
+        # 0.31: where the turn came from, when the app said (the columns exist from the
+        # migration on; a row from before reads "" and 0)
+        keys = r.keys()
+        for col, name in (
+            ("run", "run"),
+            ("turn_no", "turn"),
+            ("step", "step"),
+            ("trajectory", "trajectory"),
+            ("trajectory_step", "trajectory_step"),
+            ("script", "script"),
+        ):
+            if col in keys and r[col]:
+                d[name] = r[col]
+        return d
+
+    def my_turns(
+        self, caller: Caller, since: int = 0, limit: int = 50, before: int = 0, before_id: str = "", conversation: str = ""
+    ) -> list[dict]:
+        """The account's own record, newest first, for a device reading it back; the
+        address the operator sees is not part of it."""
+        out = []
+        for r in self.db.turns(caller.account_id, since, min(limit, 200), before, before_id, conversation[:80]):
+            d = self._turn_view(r)
+            d.pop("account_id", None)
+            d["meta"].pop("ip", None)
+            out.append(d)
+        return out
+
+    def my_turn(self, caller: Caller, turn_id: str) -> dict | None:
+        r = self.db.turn(turn_id[:96])
+        if r is None or r["account_id"] != caller.account_id:
+            return None
+        d = self._turn_view(r)
+        d.pop("account_id", None)
+        d["meta"].pop("ip", None)
+        return d
+
+    def record_view(self, caller: Caller) -> dict:
+        """Data controls' second line: what the record holds of this account."""
+        totals = self.db.record_totals(0, caller.account_id) if self.s.record_turns else {}
+        return {
+            "on": self.s.record_turns,
+            "turns": int(totals.get("n") or 0),
+            "own": int(totals.get("own") or 0),
+            "files": int(totals.get("files") or 0),
+            "media_bytes": int(totals.get("store_bytes") or 0),
+            "keep_days": self.s.record_keep_days,
+        }
+
+    def admin_turns(
+        self, account_id: str | None = None, since: int = 0, limit: int = 100, before: int = 0, before_id: str = "", conversation: str = ""
+    ) -> list[dict]:
+        return [self._turn_view(r) for r in self.db.turns(account_id, since, limit, before, before_id, conversation[:80])]
+
+    def admin_record(self, days: int = 30) -> dict:
+        """The operator's figures: turns and files in all and over ``days``, by day, and the
+        store against its cap."""
+        t = now()
+        off = self.s.day_offset_h * 3600
+        since = self.s.day_start(t) - 86400 * max(0, days - 1)
+        by_day = {int(r["day"]): r for r in self.db.turns_by_day(since, off)}
+        rows = []
+        for i in range(days):
+            d = since + i * 86400
+            s = by_day.get(d)
+            rows.append(
+                {
+                    "day": d,
+                    "turns": int(s["n"]) if s else 0,
+                    "accounts": int(s["accounts"]) if s else 0,
+                    "media": int(s["media"] or 0) if s else 0,
+                    "media_bytes": int(s["media_bytes"] or 0) if s else 0,
+                }
+            )
+        ever = self.db.record_totals(0)
+        period = self.db.record_totals(since)
+        return {
+            "on": self.s.record_turns,
+            "keep_days": self.s.record_keep_days,
+            "media_dir": str(self.media.root),
+            "media_cap_bytes": int(self.s.media_max_gb * 1024**3),
+            "totals": {
+                k: int(ever.get(k) or 0) for k in ("n", "accounts", "own", "partial", "media", "media_bytes", "files", "store_bytes")
+            },
+            "period": {"days": days, **{k: int(period.get(k) or 0) for k in ("n", "accounts", "own", "partial", "media", "media_bytes")}},
+            "days": rows,
+        }
+
+    def export_turns(self, since: int = 0, account_id: str | None = None):
+        """The record as JSON lines, the operator reading it whole (account ids included:
+        this is the account's data, not the training set — that export is export_samples).
+        The files are fetched by hash from GET /v1/admin/blobs/{sha256}."""
+        before, before_id = 0, ""
+        while True:
+            rows = self.db.turns(account_id, since, 500, before, before_id)
+            if not rows:
+                return
+            for r in rows:
+                d = self._turn_view(r)
+                d["subject"] = self.subject_of(str(r["account_id"]))
+                yield json.dumps(d, ensure_ascii=False) + "\n"
+            before, before_id = int(rows[-1]["ts"]), str(rows[-1]["id"])
+
+    def purge_record(self, account_id: str) -> tuple[int, int]:
+        """The account's record gone: rows first, then the files whose last reference it held."""
+        turns, orphans = self.db.delete_turns(account_id)
+        removed = sum(1 for sha in orphans if self.media.delete(sha))
+        return turns, removed
+
+    def sweep_record(self) -> dict[str, int]:
+        """Once an hour from the analytics loop: turns past RECORD_KEEP_DAYS (when set), then
+        files past MEDIA_MAX_GB, least recently used first. Answers what went."""
+        out = {"turns": 0, "files": 0, "trimmed": 0}
+        if not self.s.record_turns:
+            return out
+        out["files"] += self.media.retry_deletes()  # what an earlier delete could not remove
+        if self.s.record_keep_days > 0:
+            before = now() - self.s.record_keep_days * 86400
+            for _ in range(20):
+                n, orphans = self.db.sweep_turns(before)
+                out["turns"] += n
+                out["files"] += sum(1 for sha in orphans if self.media.delete(sha))
+                if n == 0 and not orphans:
+                    break
+        cap = int(self.s.media_max_gb * 1024**3)
+        if cap > 0:
+            for _ in range(50):
+                gone = self.db.trim_blobs(cap)
+                if not gone:
+                    break
+                out["trimmed"] += sum(1 for sha in gone if self.media.delete(sha))
+        return out
 
     def admin_data(self, days: int = 30) -> dict:
         """The operator's view of Data controls: how many accounts have the switch on, how
@@ -2019,10 +2824,11 @@ class Cloud:
                     "deleted": e.get("contribute.deleted", 0),
                 }
             )
-        platforms: dict[str, int] = {}
-        for r in self.db.samples_meta(since):
-            name = _platform_of(_load_meta(r["meta"]).get("ua", ""))
-            platforms[name] = platforms.get(name, 0) + int(r["n"])
+        platforms = {str(r["platform"]) or "other": int(r["n"]) for r in self.db.samples_by_platform(since)}
+        # 0.31: by who started the turn and by the key it ran on (the shape rows; a turn kept
+        # before the apps said reads "" — shown as "not said")
+        runs = {str(r["run"]): int(r["n"]) for r in self.db.samples_by_column("run", since)}
+        sources = {str(r["source"]) or "cloud": int(r["n"]) for r in self.db.samples_by_column("source", since)}
         samples = self.admin_samples(None, 0, 30)
         hints, _ = self._labels([smp["account_id"] for smp in samples], decrypt=False)
         recent = [{**smp, "hint": hints.get(smp["account_id"], "?")} for smp in samples]
@@ -2053,6 +2859,9 @@ class Cloud:
             "generated_at": t,
             "default_on": self.s.improve_default,
             "keeps": SAMPLE_KEEPS,
+            # 0.30: shape rows still waiting for their tokens (the backfill after the upgrade);
+            # the token figures below leave them out until it is through
+            "tokens_pending": self.db.sample_stats_without_tokens(),
             "accounts": {
                 "total": total,
                 "on": on,
@@ -2079,6 +2888,8 @@ class Cloud:
                 for r in self.db.samples_by_model(since)
             ],
             "by_platform": sorted(({"platform": k, "samples": v} for k, v in platforms.items()), key=lambda x: -x["samples"]),
+            "by_run": sorted(({"run": k, "samples": v} for k, v in runs.items()), key=lambda x: -x["samples"]),
+            "by_source": sorted(({"source": k, "samples": v} for k, v in sources.items()), key=lambda x: -x["samples"]),
             "by_account": by_account,
             "recent": recent,
         }
@@ -2092,24 +2903,33 @@ class Cloud:
         prompt_tokens: int,
         completion_tokens: int,
         meta: dict | None = None,
+        message: dict | None = None,
     ) -> None:
         """Called after a chat turn for an account with the switch on; anything else is a
-        no-op. Only the training view of the turn is written (_training_view)."""
+        no-op. Only the training view of the turn is written (_training_view). ``message``
+        is the assistant's whole message when the caller has it: its tool calls are kept in
+        the meta (0.31), since ``response`` is the text alone and a turn that only called
+        a tool would otherwise read as an empty reply."""
         if not caller.contribute:
             return
         request, cut = _fit_messages(_training_view(messages), self.SAMPLE_MAX_CHARS)
         meta = dict(meta or {})
+        if isinstance(message, dict) and isinstance(message.get("tool_calls"), list) and message["tool_calls"]:
+            calls = _training_view([message])
+            if calls and isinstance(calls[0], dict) and calls[0].get("tool_calls"):
+                meta["tool_calls"] = calls[0]["tool_calls"]
         if cut or len(response) > self.SAMPLE_MAX_CHARS:
             meta["truncated"] = True
-        self.db.add_sample(
-            caller.account_id,
-            model,
-            request,
-            response[: self.SAMPLE_MAX_CHARS],
-            prompt_tokens,
-            completion_tokens,
-            json.dumps(meta, ensure_ascii=False),
-        )
+        meta_json = json.dumps(meta, ensure_ascii=False)
+        response = response[: self.SAMPLE_MAX_CHARS]
+        sid = self.db.add_sample(caller.account_id, model, request, response, prompt_tokens, completion_tokens, meta_json)
+        # 0.28: the turn's shape beside it (analytics.py), so the quality page never reads the turn
+        try:
+            self.db.add_sample_stats(
+                [sample_shape(sid, caller.account_id, now(), model, request, response, meta_json, prompt_tokens, completion_tokens)]
+            )
+        except Exception:  # the shape is a convenience; the turn is kept either way
+            log.exception("sample_stats row")
 
     def admin_samples(
         self, account_id: str | None = None, since: int = 0, limit: int = 100, before: int = 0, before_id: str = ""
@@ -2121,7 +2941,7 @@ class Cloud:
             d["meta"] = _load_meta(d["meta"])
             if cut:
                 d["meta"]["truncated"] = True
-            d["platform"] = platform_of(d["meta"].get("ua", ""))
+            d["platform"] = platform_from(d["meta"])
             out.append(d)
         return out
 
@@ -2143,8 +2963,12 @@ class Cloud:
                     meta["truncated"] = True
                 d = {
                     "id": r["id"],
+                    # 0.31: the account's pseudonym, so one person's turns group across the
+                    # export and go together when the deletions ledger names the subject
+                    "subject": self.subject_of(str(r["account_id"])),
                     "ts": int(r["ts"]),
                     "model": r["model"],
+                    "platform": platform_from(meta),
                     "messages": messages,
                     "response": r["response"],
                     "prompt_tokens": int(r["prompt_tokens"]),
@@ -2604,6 +3428,25 @@ class Cloud:
             "devices": [dict(d) for d in self.db.devices_for(account_id)],
             "recent": ledger["rows"],
             "events": events["rows"],
+            # 0.28: how this account's chats went in the period (the telemetry rows, never a word)
+            "calls": self._calls_summary(account_id, since),
+        }
+
+    def _calls_summary(self, account_id: str, since: int) -> dict:
+        r = self.db.calls_for_account(account_id, since)
+        n = int(r["n"] or 0)
+        return {
+            "n": n,
+            "ok": int(r["ok"] or 0),
+            "errors": int(r["errors"] or 0),
+            "refused": int(r["refused"] or 0),
+            "hands": int(r["hands"] or 0),
+            "images": int(r["images"] or 0),
+            "with_tools": int(r["with_tools"] or 0),
+            "avg_ttft_ms": round(float(r["avg_ttft_ms"] or 0)),
+            "avg_total_ms": round(float(r["avg_total_ms"] or 0)),
+            "avg_wait_ms": round(float(r["avg_wait_ms"] or 0)),
+            "last_ts": int(r["last_ts"]) if r["last_ts"] else None,
         }
 
     def _account_label(self, account_id: str) -> dict | None:
@@ -2691,6 +3534,7 @@ class Cloud:
                 if not batch:
                     break
                 for invitee_id in batch:
+                    self.purge_record(invitee_id)
                     self.db.delete_account(invitee_id)
                     self.db.add_event("", "account.deleted", f"{invitee_id[:8]} by {actor} (invite abuse)"[:200])
                     deleted_ids.append(invitee_id)
@@ -2885,6 +3729,7 @@ class Cloud:
         written across accounts, where the activity page and the statistics read it."""
         if self.db.account(account_id) is None:
             raise CloudError(404, "no_account", "No such account")
+        self.purge_record(account_id)
         self.db.delete_account(account_id)
         self.db.add_event("", "account.deleted", f"{account_id[:8]} by {actor}"[:200])
         self.db.audit_add(actor, "account.delete", account_id[:8])

@@ -346,8 +346,16 @@ async def fetch_models(
     try:
         import httpx
 
+        from nanomuse.llm.factory import is_local_endpoint
+
         async with httpx.AsyncClient(
-            timeout=8.0, follow_redirects=False, transport=transport
+            timeout=8.0,
+            follow_redirects=False,
+            transport=transport,
+            # a model served on this machine (Ollama, LM Studio, vLLM) is asked directly:
+            # through the environment's proxy the answer is the proxy's, and the person was
+            # told the endpoint lists nothing
+            trust_env=not is_local_endpoint(base_url),
         ) as client:
             for url in candidates:
                 try:
@@ -636,7 +644,9 @@ class Connections:
         if hub is None or not hub.signed_in:
             return []
         local_names = {m.name for m in self.settings.mcp.servers}
-        local_urls = {(m.url or "").split("?", 1)[0] for m in self.settings.mcp.servers if m.url}
+        local_urls = {
+            hub.profile.public_url(m.url or "") for m in self.settings.mcp.servers if m.url
+        }
         return [
             {**e, "here": e["id"] in local_names or (bool(e["url"]) and e["url"] in local_urls)}
             for e in hub.profile.shared_connectors
@@ -699,6 +709,11 @@ class Connections:
         address and its key by reference, and ``provider``, ``base_url`` and ``api_key`` in
         the body are ignored; the other fields apply as always."""
         llm = dict(self.data.get("llm") or {})
+        # what the slot pointed at before this save: the preset ids share one protocol
+        # name ("openai"), so the address is what tells two providers apart
+        prev = self.data.get("llm") or {}
+        prev_provider = prev.get("provider")
+        prev_base_url = normalize_base_url(str(prev.get("base_url") or ""))
         body = dict(body)
         if body.get("endpoint"):
             fields = self.endpoints.slot_fields(str(body["endpoint"]))
@@ -732,6 +747,20 @@ class Connections:
         elif api_key == "":
             # an explicitly empty key: no key at all (local models)
             self.vault.delete(LLM_KEY)
+            llm["api_key"] = ""
+        elif (
+            not body.get("endpoint")
+            and prev_provider
+            and (
+                prev_provider != llm.get("provider")
+                or prev_base_url != normalize_base_url(str(llm.get("base_url") or ""))
+            )
+        ):
+            # the provider changed and no key was typed: the key in the vault is the
+            # previous provider's, so keeping the reference would send one provider's
+            # key to another. No key is the honest state; the vault entry is left alone
+            # because it still belongs to the provider it was saved for. An endpoint
+            # (``body["endpoint"]``) sets its own reference above and is left as it is.
             llm["api_key"] = ""
         self.data["llm"] = llm
         self._save()
@@ -838,7 +867,7 @@ class Connections:
 
     def set_search(self, body: dict[str, Any]) -> dict[str, Any]:
         """Who answers web searches: DuckDuckGo (nothing to set), Brave, Tavily or Serply
-        with a key, You.com with or without one, or a SearXNG instance by URL."""
+        with a key, You.com or Parallel with or without one, or a SearXNG instance by URL."""
         from nanomuse.search import PROVIDERS as SEARCH_PROVIDERS
 
         web = dict(self.data.get("search") or {})
@@ -1688,7 +1717,12 @@ class Connections:
         if not tools:
             await manager.close()
             self._publish()
-            raise RuntimeError(f"could not connect to '{cfg.name}' (see the server log)")
+            # the server is kept as typed (the Connections page shows it as not connected)
+            # and tried again at the next start; the person removes it if it was a mistake
+            raise RuntimeError(
+                f"could not connect to '{cfg.name}' (see the server log); it is saved and will "
+                "be tried again when the runtime starts"
+            )
         self._mcp[cfg.name] = manager
         self.svc.app.tools.add(*tools)
         self._publish()

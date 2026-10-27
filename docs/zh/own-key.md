@@ -40,6 +40,9 @@ nanoMuse 免费、非营利。它背后的模型要花钱，每个账号的起�
 | OpenCode Zen | ● | | | | 海外 | [opencode.ai/auth](https://opencode.ai/auth) |
 | OpenCode Go | ● | | | | 海外 | [opencode.ai/auth](https://opencode.ai/auth) |
 | Standard Compute | ● | | | | 海外 | [standardcompute.com](https://standardcompute.com/dashboard/api-keys) |
+| API Route | ● | | | | 海外 | [api-route.com](https://www.api-route.com/api-keys) |
+| Cheaper Inference | ● | | | | 海外 | [cheaperinference.com](https://cheaperinference.com/signup) |
+| Opper | ● | | | | 海外 | [platform.opper.ai](https://platform.opper.ai) |
 | Ollama / LM Studio / vLLM（本机） | ● | | | | 都可以 | 不需要 key |
 
 「视频」一栏只有百炼，是因为 nanoMuse 的视频生成走的是百炼的接口；其他家的视频模型用的是各自的任务接口，这一轮还没有接。「画图」一栏里，OpenRouter 走的是它的 Image API，模型例如 `openai/gpt-image-2`；Gemini 用 `gemini-2.5-flash-image`。
@@ -65,6 +68,9 @@ nanoMuse 免费、非营利。它背后的模型要花钱，每个账号的起�
 - **OpenCode Zen。** 在 [opencode.ai/auth](https://opencode.ai/auth) 申请 key；按请求从余额里扣费，有几个模型免费。地址 `https://opencode.ai/zen/v1`。只有 OpenAI 格式的那些模型到得了，所以只有对话、没有动手：OpenCode 列出的视觉模型 `deepseek-v4-flash-vision-exp` 在 DeepSeek 自家平台上已经退役。OpenCode 没有套餐登录，只有 key，所以这里没有可以登录的东西。
 - **OpenCode Go。** 同一域名上的订阅：在 OpenCode 控制台订阅 Go（每月 10 美元）或 Go Plus（每月 40 美元），再到 [opencode.ai/auth](https://opencode.ai/auth) 申请 key。地址 `https://opencode.ai/zen/go/v1`。用量按模型计，分每月、每周和每 5 小时三档上限。OpenCode 把 Go 定位给编程智能体，要求客户端说明自己是谁，并在 `x-opencode-session` 里为每个对话带上一个固定的 id（[它的 Go 页面](https://opencode.ai/go)，「Can I use Go with other coding agents?」一条）。运行时（也就是网页控制台）每次请求 Go 都把 `nanoMuse/<版本>` 作为 user agent，并在这个请求头里带上对话的 id；不属于任何对话的调用（比如连接测试）带的是它自己的 id。桌面版把 Go 写成模型适配器自带的 OpenCode Go 路由，这条路由同样会带上这个请求头，并按每个模型自己的格式访问：桌面版提供这条路由的目录里列出的模型，走 Responses 和 Messages 格式的也在内；其他地方只走 OpenAI 格式。手机端也会发：对 OpenCode 域名的对话和 Responses 请求都带上这个请求头，id 是这个聊天的提示缓存键，由第一条消息算出，每一轮都一样（开头一字不差的两个聊天会共用一个）。和 Zen 一样只有对话。
 - **Standard Compute。** 在 [standardcompute.com/dashboard/api-keys](https://standardcompute.com/dashboard/api-keys) 申请 key；按月付固定费用，每月 19 美元起，每个套餐有每月的算力预算，用完后请求返回 402（没有超额费用）。地址 `https://api.stdcmpt.com/v1`。默认模型 `standardcompute` 是一个路由：每个请求从账号 Models 页面里启用的模型中挑一个；也可以改填 `https://api.stdcmpt.com/v1/models` 里的任意模型 id。只有对话：路由在这个列表里没有声明能看图，所以「动手」不列入。
+- **Cheaper Inference。** 在 [cheaperinference.com/signup](https://cheaperinference.com/signup) 申请 key；一把 key 用多个厂商的模型。地址 `https://api.cheaperinference.com/v1`。默认模型是 `gpt-5.4-mini`；也可以改填 `https://api.cheaperinference.com/v1/models` 里的任意模型 id。这里只有对话，走 OpenAI 格式。
+- **API Route。** 登录后打开 [API keys](https://www.api-route.com/api-keys)，并为账号充值。地址为 `https://global.api-route.com/v1`；默认模型 `gpt-6.1-sol` 已通过 `/v1/models` 列表和真实对话请求验证。其他模型 id 应从这把 key 可用的列表中选择。费用按所选模型的[当前价格](https://www.api-route.com/pricing)从 API Route 预充值余额中扣除，与 nanoMuse Cloud 分开计费。这里只提供对话，尚未验证图片输入、图片生成和视频功能。详见[服务商文档](https://www.api-route.com/docs/overview)。
+- **Opper。** 在 [platform.opper.ai](https://platform.opper.ai) 的 *API Keys* 里创建 key；一把 key 用 50 多家服务商的 700 多个模型，按服务商的价格计费，不加价，网关托管在欧盟。地址 `https://api.opper.ai/v3/compat`。默认模型是 `claude-sonnet-4-6`；也可以改填 `https://api.opper.ai/v3/compat/models` 里的任意模型 id，`anthropic/claude-sonnet-4-6` 这样带服务商前缀的 id 固定走一条线路。这里只有对话，走 OpenAI 格式。
 
 **贴到 nanoMuse 里。**
 
@@ -73,7 +79,7 @@ nanoMuse 免费、非营利。它背后的模型要花钱，每个账号的起�
 - 网页控制台：额度卡片上的「去设置」会打开「连接」页并选好服务商；或者 连接 → 对话模型，点服务商，贴 key，保存。
 - 自己跑的运行时：在 `config.toml` 里写 `[llm] provider = "bailian"`（表里任一服务商的 id）加 `api_key`，地址和默认模型会从目录文件里补上；画图、生成视频用另一家，就加 `[image]` / `[video]` 一段（[configuration.md](configuration.md#image-and-video)）。
 
-**用它来做什么。** key 保存好之后，会弹出一张卡片问这把 key 负责哪些事：这家服务商能做的每件事一个开关（对话、操作屏幕、生成图片、生成视频），默认全开。「就这样」把勾上的几行切到这家服务商，每件事用目录里的默认模型（目录里的默认模型不在它的列表里时，用列表里第一个能做这件事的）；「暂不」什么都不改，关掉的开关也什么都不改。登录了 nanoMuse Cloud 的话，卡片会说其余仍由 nanoMuse Cloud 负责。每一行以后都可以在 设置 › 模型 里改（网页控制台：「连接」页）。
+**用它来做什么。** key 保存好之后，会弹出一张卡片问这把 key 负责哪些事：这家服务商能做的每件事一个开关（对话、操作屏幕、生成图片、生成视频），默认全开。「就这样」把勾上的几行切到这家服务商，每件事用目录里的默认模型（目录里的默认模型不在它的列表里时，用列表里第一个能做这件事的）；「暂不」什么都不改，关掉的开关也什么都不改，其他模型选择保持原样。每一行以后都可以在 设置 › 模型 里改（网页控制台：「连接」页）。
 
 ## 哪个模型做哪件事 {#which-model-does-what}
 
@@ -86,15 +92,15 @@ nanoMuse 免费、非营利。它背后的模型要花钱，每个账号的起�
 | 生成图片 | 形象的肖像，以及你要的图片。 | 你有图像模型的服务商 |
 | 生成视频 | 形象的短视频。 | 你有视频模型的服务商（百炼） |
 
-每行显示 `服务商 · 模型`，点开是选择器：登录时 nanoMuse Cloud 一组在最前，推荐的那个有标记，然后你的每家服务商一组，只列能做这件事的模型。没有这项能力的服务商在这一行里根本不出现。一行里什么都没有时，显示那句「谁能提供」的话和「添加服务商」。对话这一行选了，就是新对话的默认，主要聊天也跟着走（「对主要聊天和新对话生效；旁聊保留自己的模型。」）：主要聊天是聊天标签页始终显示的那一个对话，永远不算「新对话」，不这样的话就会一直停在它开始时的服务商上；已经打开的旁聊保留它的模型。还没写过字的对话也跟着走：刚登录后的主要聊天（账号一开始是一个空对话），或者你新开了又放着的对话。所以「对话」这一行写的是什么，你发出的下一条消息就由谁来回答，主要聊天和新对话都是，不管之前用的是哪个来源：你登录的套餐（ChatGPT、Claude、Kimi）、你自己的 key，还是 nanoMuse Cloud；登录永远不会抢在你的选择前面。手机和桌面版都是这样。在对话自己的选择器里（`•••` 菜单的一行，或它下面的一个模型）选了你自己的模型组，这个组就原样成为默认，不会被重新排序，主要聊天带着对话解析出的那个模型跟过去；只有以服务商命名、且只含这一家服务商的组，才会像在模型页里选择那样把选中的模型排到最前。手机上你的模型组可以带一个默认思考等级（iPhone 的「全部设置 › 模型组」，Android 从对话选择器进入的「模型组」），主要聊天跟着选择走的时候，这个等级一起带过去，和新对话、对话自己的选择器一样。
+每行显示 `服务商 · 模型`，点开是选择器。对话和操作屏幕两行在登录时先列 nanoMuse Cloud，并标出中继给这条通道的推荐模型；媒体两行只列你自己的服务商，因为项目托管 Cloud 不生成图片或视频。只有自己部署的中继由运营者明确开启并在菜单里声明媒体能力时，它才会出现在媒体行。然后是你的每家服务商一组，只列能做这件事的模型。没有这项能力的服务商在这一行里根本不出现。一行里什么都没有时，显示那句「谁能提供」的话和「添加服务商」。对话这一行选了，就是新对话的默认，主要聊天也跟着走（「对主要聊天和新对话生效；旁聊保留自己的模型。」）：主要聊天是聊天标签页始终显示的那一个对话，永远不算「新对话」，不这样的话就会一直停在它开始时的服务商上；已经打开的旁聊保留它的模型。还没写过字的对话也跟着走：刚登录后的主要聊天（账号一开始是一个空对话），或者你新开了又放着的对话。所以「对话」这一行写的是什么，你发出的下一条消息就由谁来回答，主要聊天和新对话都是，不管之前用的是哪个来源：你登录的套餐（ChatGPT、Claude、Kimi）、你自己的 key，还是 nanoMuse Cloud；登录永远不会抢在你的选择前面。手机和桌面版都是这样。在对话自己的选择器里（`•••` 菜单的一行，或它下面的一个模型）选了你自己的模型组，这个组就原样成为默认，不会被重新排序，主要聊天带着对话解析出的那个模型跟过去；只有以服务商命名、且只含这一家服务商的组，才会像在模型页里选择那样把选中的模型排到最前。手机上你的模型组可以带一个默认思考等级（iPhone 的「全部设置 › 模型组」，Android 从对话选择器进入的「模型组」），主要聊天跟着选择走的时候，这个等级一起带过去，和新对话、对话自己的选择器一样。
 
 **自动。** 操作屏幕、生成图片、生成视频三行打开时第一项是「自动」，写着它现在给的是什么。选它，这一行忘掉在这里做过的选择，按一个顺序走：对话模型所在的服务商是你自己的、而且能做这件事时用它（目录里的默认模型）；否则 nanoMuse Cloud 的实际菜单有这项能力、账号已登录且 Cloud 模型开着时用它；否则用你第一家能做这件事的服务商。项目托管 Cloud 的菜单只有对话和操作屏幕，因此生图和生视频会直接走你自己的服务商。你做过的选择永远优先；nanoMuse Cloud 不会排到你选的服务商前面。每台设备各自选，因为 key 不会离开录入它的那台设备。
 
-**不会悄悄回退。** 你自己的模型在某一轮失败时，什么都不会自动切换：错误卡片上多一个按钮「这次改用 nanoMuse Cloud」（只在登录时出现），只把这一轮放到账号的模型上重跑，不改任何一行。桌面版在形象工作室的一轮失败和一组短视频失败之后也给同一个按钮。
+**不会悄悄回退。** 你自己的模型在某一轮失败时，什么都不会自动切换：错误卡片上多一个按钮「这次改用 nanoMuse Cloud」（只在登录时出现），只把这次对话或操作屏幕的请求放到账号模型上重跑，不改任何一行。图片或视频失败时没有 Cloud 重试；修好或换成你自己的媒体服务商后再试。
 
 **思考深度（桌面版）。** 输入框的模型选择器会给你自己的模型提供思考深度，前提是服务商的文档写明了怎么控制，发送时用的也是服务商自己的字段：DeepSeek、Kimi（kimi-k3）、智谱（GLM-5.2 和 5.3）、硅基流动和火山引擎（它们的 DeepSeek-V4、GLM-5.2 以及豆包 Seed 2）、MiniMax（M3.1）、OpenRouter（按它模型列表里每个模型给出的档位）、OpenAI（o 系列、GPT-5 起）、Anthropic（Claude 4.6 起）、走 OpenAI 兼容层的 Gemini、xAI（Grok 4.5 起）、Groq、Mistral，以及 Ollama 或 vLLM 上的 gpt-oss。档位就是服务商自己的（比如 DeepSeek 是 `low`、`high`、`max`），「服务商默认」什么都不发，模型按服务商文档里的默认方式思考。没有「关闭」这一项：在这些服务商那里，关掉思考是另一个开关或另一个模型。没有文档写明档位的模型不显示这个控件，百炼（它的开关是 `enable_thinking`，没法不发）、LM Studio 和自定义端点也不显示。在这个版本之前保存的 key，下次启动时会拿到这个控件。
 
-**关掉 nanoMuse Cloud。** 登录时，模型页上有一个开关「使用 nanoMuse Cloud 模型」。关掉之后，nanoMuse Cloud 从选择器和自动顺序里退出，任何附带的调用（对话标题、记忆、形象、动手）都不会在它上面运行，唯一会消耗额度的是「这次改用 nanoMuse Cloud」这个按钮，而且只在你每次点它的时候。账号保持登录：同步、你的设备和账号页照常工作。nanoMuse Cloud 这家服务商不能像你自己添加的那样删除（删除它就等于退出登录）；退出登录在「设置 › nanoMuse Cloud」里。
+**关掉 nanoMuse Cloud。** 登录时，模型页上有一个开关「使用 nanoMuse Cloud 模型」。关掉之后，nanoMuse Cloud 从选择器和自动顺序里退出，任何附带的调用（对话标题、记忆、动手）都不会在它上面运行，唯一会消耗额度的是「这次改用 nanoMuse Cloud」这个按钮，而且只在你每次点它的时候。账号保持登录：同步、你的设备和账号页照常工作。nanoMuse Cloud 这家服务商不能像你自己添加的那样删除（删除它就等于退出登录）；退出登录在「设置 › nanoMuse Cloud」里。
 
 **不用账号。** 有自己的 key，应用在未登录时一样能用：对话、动手、生成图片和短视频都跑在你的服务商上，第一屏在登录旁边给了「改用自己的 API key」。只有 nanoMuse Cloud 的模型、对话同步和设备互通才需要登录。
 

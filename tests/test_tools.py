@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
 import sys
 from pathlib import Path
@@ -13,6 +14,91 @@ from nanomuse.tools import Files, PythonExecute, Shell, Terminate
 from nanomuse.tools.email_tool import scrub_email_secrets
 from nanomuse.tools.shell import code_reach, scrubbed_env
 from nanomuse.tools.web import fetch_public, host_of, html_to_markdown
+
+
+async def test_files_writes_the_lines_it_was_given(tmp_path: Path):
+    """A write puts the text the model asked for on disk: the text mode on Windows turned
+    every "\\n" into "\\r\\n", so `#!/bin/sh` arrived as `#!/bin/sh\\r` (a script WSL and git
+    bash refuse to run), and reading the file back was not reading what was written."""
+    files = Files(workspace=tmp_path)
+    r = await files.execute(action="write", path="run.sh", content="#!/bin/sh\necho hi\n")
+    assert r.ok and "18 chars" in r.output
+    assert (tmp_path / "run.sh").read_bytes() == b"#!/bin/sh\necho hi\n"
+    r = await files.execute(action="append", path="run.sh", content="exit 0\n")
+    assert r.ok
+    assert (tmp_path / "run.sh").read_bytes() == b"#!/bin/sh\necho hi\nexit 0\n"
+    r = await files.execute(action="read", path="run.sh")
+    assert r.output == "#!/bin/sh\necho hi\nexit 0\n"
+    # text that already carries a carriage return is written as it is, not doubled
+    r = await files.execute(action="write", path="win.txt", content="a\r\nb\r\n")
+    assert (tmp_path / "win.txt").read_bytes() == b"a\r\nb\r\n"
+
+
+async def test_files_reads_a_file_the_way_it_reads_a_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file is often a command's output: PowerShell 5's ``>`` and ``reg export`` write
+    UTF-16LE, Notepad offers UTF-8 with a mark, a redirect on a Chinese console writes code
+    page 936. Read as plain UTF-8, the model got NULs and replacement characters instead of
+    the text; the file now goes through the shell tool's own decoder."""
+    import nanomuse.stdio as stdio
+
+    files = Files(workspace=tmp_path)
+    (tmp_path / "powershell.txt").write_bytes("第一行\nsecond\n".encode("utf-16"))
+    r = await files.execute(action="read", path="powershell.txt")
+    assert r.ok and r.output == "第一行\nsecond\n"
+
+    (tmp_path / "notepad.txt").write_bytes(b"\xef\xbb\xbf" + "中文".encode())
+    r = await files.execute(action="read", path="notepad.txt")
+    assert r.ok and r.output == "中文"
+
+    (tmp_path / "plain.txt").write_bytes(b"plain\n")
+    r = await files.execute(action="read", path="plain.txt")
+    assert r.ok and r.output == "plain\n"
+
+    # the console's code page is the last resort, as in the shell tool (asked of the console
+    # itself, so the test names it rather than depending on the machine running it)
+    (tmp_path / "cmd.txt").write_bytes("中文目录".encode("cp936"))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(stdio, "console_encoding", lambda: "cp936")
+        r = await files.execute(action="read", path="cmd.txt")
+        assert r.ok and r.output == "中文目录"
+
+
+async def test_files_read_cut_inside_a_character_stays_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The byte window can end inside a multi-byte character. The strict UTF-8 read then
+    failed on the tail, and a console code page that takes any byte (cp1252) read the whole
+    file as mojibake: `€€€` came back as `â‚¬â‚¬â‚¬`. The unfinished character is cut off
+    before the bytes are read."""
+    import nanomuse.stdio as stdio
+    from nanomuse.tools import files as files_module
+
+    # a 52-byte window: seventeen 3-byte characters and the first byte of the next
+    monkeypatch.setattr(files_module, "MAX_READ_CHARS", 11)
+    monkeypatch.setattr(stdio, "console_encoding", lambda: "cp1252")
+    (tmp_path / "euro.txt").write_text("€" * 100, encoding="utf-8")
+    r = await Files(workspace=tmp_path).execute(action="read", path="euro.txt")
+    assert r.ok and r.output.startswith("€" * 11) and "â" not in r.output
+    # the trim is only for a cut that lands inside a character
+    assert files_module.whole_utf8(b"abc") == b"abc"
+    assert files_module.whole_utf8("中文".encode()) == "中文".encode()
+    assert files_module.whole_utf8("中文".encode()[:-1]) == "中".encode()
+    assert files_module.whole_utf8("中文".encode()[:-2]) == "中".encode()
+    assert files_module.whole_utf8(b"\xff\xfe") == b"\xff\xfe"  # not UTF-8 at all: untouched
+
+
+async def test_files_read_cuts_between_characters(tmp_path: Path):
+    """The cap is characters, not bytes: a long file is cut at the cap with a trailing
+    character whole, never half of one (which would read as U+FFFD)."""
+    from nanomuse.tools import files as files_module
+
+    text = "中" * (files_module.MAX_READ_CHARS + 50)
+    (tmp_path / "big.txt").write_text(text, encoding="utf-8")
+    r = await Files(workspace=tmp_path).execute(action="read", path="big.txt")
+    assert r.ok and "truncated" in r.output and "�" not in r.output
+    assert r.output.startswith("中" * 100)
 
 
 async def test_files_workspace_scoping(tmp_path: Path):
@@ -45,6 +131,28 @@ async def test_files_workspace_scoping(tmp_path: Path):
     (tmp_path / "docs" / "x.md").write_text("x")
     r = await outside.execute(action="search", path=str(tmp_path / "docs"), pattern="*.md")
     assert r.ok and r.output == str(tmp_path / "docs" / "x.md")
+
+
+async def test_files_says_when_a_listing_or_a_search_was_cut(tmp_path: Path):
+    from nanomuse.tools import files as files_module
+
+    for name in ("a.md", "b.md", "c.md"):
+        (tmp_path / name).write_text("x")
+    files = Files(workspace=tmp_path)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(files_module, "LIST_MAX", 2)
+        r = await files.execute(action="list", path=".")
+        assert r.ok and "3 entries in all; the first 2 are listed" in r.output
+        patch.setattr(files_module, "SEARCH_MAX_MATCHES", 2)
+        r = await files.execute(action="search", pattern="*.md")
+        # the walk's order is the file system's (APFS hands names back unsorted), so the
+        # two kept are any two of the three
+        assert r.ok and sum(line.endswith(".md") for line in r.output.splitlines()) == 2
+        assert "stopped at 2 matches; narrow the pattern" in r.output
+    r = await files.execute(action="list", path=".")
+    assert "entries in all" not in r.output
+    r = await files.execute(action="search", pattern="*.md")
+    assert "stopped" not in r.output
 
 
 async def test_files_read_truncates_without_loading_the_whole_file(tmp_path: Path):
@@ -80,6 +188,30 @@ async def test_files_write_repairs_double_escaped_newlines(tmp_path: Path):
     one = 'echo "a\\nb"'
     await files.execute(action="write", path="one.sh", content=one)
     assert (tmp_path / "one.sh").read_text() == one
+
+
+async def test_a_write_into_an_extra_root_on_another_drive_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An extra root on another drive has no path relative to the workspace, and Windows'
+    ``os.path.relpath`` raises "path is on mount 'D:', start on mount 'C:'" there, after the
+    file is already on disk: the write succeeded and the model was told it failed."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    extra = tmp_path / "D"
+    extra.mkdir()
+    files = Files(workspace=ws, extra_roots=[extra])
+    real_relpath = os.path.relpath
+
+    def relpath(path: str | Path, start: str | Path | None = None) -> str:
+        if Path(path).is_relative_to(extra):
+            raise ValueError("path is on mount 'D:', start on mount 'C:'")
+        return real_relpath(path, start)
+
+    monkeypatch.setattr(os.path, "relpath", relpath)
+    r = await files.execute(action="write", path=str(extra / "note.txt"), content="hi")
+    assert r.ok and "note.txt" in r.output, r.error
+    assert (extra / "note.txt").read_text("utf-8") == "hi"
 
 
 async def test_shell_and_python(tmp_path: Path):
@@ -360,6 +492,37 @@ async def test_web_fetch_stops_reading_at_the_body_cap(monkeypatch: pytest.Monke
         "http://public.example/big", timeout=5, transport=httpx.MockTransport(handler)
     )
     assert len(resp.content) == 1000 and served <= 4096 * 2
+
+
+async def test_web_fetch_reads_a_compressed_page_once(monkeypatch: pytest.MonkeyPatch):
+    """#641: the streamed read already undoes the gzip, and the response handed back used
+    to repeat the wire's `content-encoding`, so httpx decoded the body a second time and
+    every compressed page failed with `incorrect header check`."""
+    import gzip
+
+    page = b"<html><body>" + b"hello gzip " * 40 + b"</body></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(page),
+            headers={"content-encoding": "gzip", "content-type": "text/html", "x-a": "1"},
+        )
+
+    resp = await fetch_public(
+        "http://public.example/zipped", timeout=5, transport=httpx.MockTransport(handler)
+    )
+    assert resp.content == page
+    assert "content-encoding" not in resp.headers and resp.headers["x-a"] == "1"
+
+    # the cap applies to the page as read, so a compressed page is cut where a plain one is
+    from nanomuse.tools import web as web_mod
+
+    monkeypatch.setattr(web_mod, "MAX_BODY_BYTES", 100)
+    resp = await fetch_public(
+        "http://public.example/zipped", timeout=5, transport=httpx.MockTransport(handler)
+    )
+    assert resp.content == page[:100]
 
 
 class _Chunks(httpx.AsyncByteStream):

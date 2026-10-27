@@ -83,6 +83,21 @@ const zhCN: Record<string, string> = {
   "{name} is on it": "{name} 正在处理",
   "Browser: {title}": "浏览器：{title}",
 
+  // ── Feedback: the thumbs under a reply, the question after a Stop ────────────────
+  "Good reply": "回答得好",
+  "Not a good reply": "回答得不好",
+  "What was wrong?": "哪里不对？",
+  Wrong: "答错了",
+  "Not helpful": "没帮上忙",
+  "Should not have done that": "不该这么做",
+  "Too slow": "太慢了",
+  "Another reason": "其他原因",
+  "Noted, thanks": "收到，谢谢",
+  "Why did you stop it?": "为什么停下来？",
+  "It was going wrong": "方向不对",
+  "Changed my mind": "改主意了",
+  "It was already done": "已经做完了",
+
   // ── Cards: approvals, questions, browser, artifacts ───────────────────────────────
   safe: "安全",
   moderate: "中等",
@@ -1051,7 +1066,7 @@ const zhCN: Record<string, string> = {
   "Set a password": "设一个密码",
   "Your account is in. With a password, your phone and your other computers sign in at once, without waiting for a code. Optional; you can set one later under Account.":
     "账号已登录。设了密码，手机和其他电脑就能直接登录，不用再等验证码。可选，以后也可以在「账号」里设置。",
-  "At least 8 characters": "至少 8 个字符",
+  "At least {n} characters": "至少 {n} 个字符",
   "Set the password": "设置密码",
   "Not now": "以后再说",
   "I already starred": "已经点过了",
@@ -1343,7 +1358,7 @@ const zhCN: Record<string, string> = {
   Change: "修改",
   Set: "设置",
   "Current password": "当前密码",
-  "New password (8 characters or more)": "新密码（至少 8 位）",
+  "New password ({n} characters or more)": "新密码（至少 {n} 位）",
   "Once more": "再输一次",
   "The two do not match.": "两次输入不一致。",
   "Change password": "修改密码",
@@ -1516,6 +1531,8 @@ const zhCN: Record<string, string> = {
   "This account has used its tokens.": "这个账号的额度已经用完。",
   "This account is disabled.": "这个账号已被停用。",
   "That model is not offered here.": "这里不提供这个模型。",
+  "nanoMuse Cloud no longer generates pictures or clips. Add your own image or video provider and API key under Models.":
+    "nanoMuse Cloud 不再生成图片和视频。请在「模型」里添加自己的图片或视频服务商和 API key。",
   "Too many requests; slow down a little.": "请求太频繁了，稍微慢一点。",
   "The free allowance is used up. Invite a friend (the relay adds to both your allowances) or add your own model key; your sign-in and your devices keep working either way.":
     "免费额度已用完。邀请一位新用户（你和对方的额度都会增加），或者换成自己的 key；无论选哪个，登录和多设备功能都不受影响。",
@@ -1746,6 +1763,8 @@ const zhCN: Record<string, string> = {
   "On. This device's side chats go to the account; the other devices' are on their way.": "已打开。本机的旁聊会上传到账号，其他设备的旁聊正在同步过来。",
   "Off. Side chats stay on this device from now on.": "已关闭。从现在起，旁聊只留在本机。",
   "{device} is working…": "{device} 正在处理…",
+  "{device} is working: {detail}": "{device} 正在处理：{detail}",
+  "{device} is waiting for you": "{device} 在等你确认",
   "From {device}": "来自 {device}",
   "to {device}": "发给 {device}",
   "This goes to {device}.": "这条会发给 {device}。",
@@ -1758,6 +1777,8 @@ const zhCN: Record<string, string> = {
   "Open the chat. It introduces itself and asks your name.": "打开聊天。它会介绍自己，并问你的名字。",
   "Pick a name for me, or type one": "给我挑一个名字，或者自己输入一个",
   "Something else": "自己起一个",
+  "Type a name for me": "输入你想叫我什么",
+  "Call me this": "就叫这个",
 
   // the own-key model form: the proxy for this provider
   "Proxy (optional)": "代理（可选）",

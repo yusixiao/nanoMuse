@@ -98,7 +98,7 @@ class ChatViewModel(
     val memoryRepository: MemoryRepository? = null,
     val skillRepository: com.openminis.app.data.repository.SkillRepository? = null,
     val mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
-) : ViewModel() {
+) : ViewModel(io.github.nanomuse.cloud.Provenance.scope(sessionId)) { // nanoMuse: the scope names the chat, so every model call made under it says which conversation and turn it belongs to (relay 0.31)
 
     companion object {
         internal const val TAG = "ChatViewModel"
@@ -1224,7 +1224,7 @@ class ChatViewModel(
      * fixed list of definition objects, no I/O.
      */
     private val agentTools: List<AgentToolDefinition>
-        get() = AgentTools.makeAgentTools(
+        get() = io.github.nanomuse.chat.PromptDiet.tools(AgentTools.makeAgentTools( // nanoMuse: browser_use worded densely (PromptDiet)
             // [T-android-vision-group / GH#182] The main model's own vision
             // capability. When false but a Vision Group is configured, read_image
             // is still exposed and routes through the group (see
@@ -1238,7 +1238,7 @@ class ChatViewModel(
                 providerRepository, context,
             ),
             memoryEnabled = _memoryEnabled.value,
-        )
+        ))
 
     /**
      * Per-session loop detector. Reset alongside [agentHistory] whenever the
@@ -3650,9 +3650,16 @@ class ChatViewModel(
                     if (_isStreaming.value) nmPulledWhileStreaming = true else reloadSessionFromDb()
                 }
             }
+            // the chat's turn count, read by the relay headers as each call goes out (Provenance)
+            viewModelScope.coroutineContext[io.github.nanomuse.cloud.Provenance.Session]?.turns = { _messages.value.count { it.role == "user" } }
+            var nmWasStreaming = false
             _isStreaming.collect { streaming ->
                 // the turn is over: the reply goes up and the other devices hear "done" (C9)
                 if (!streaming) io.github.nanomuse.sync.ConversationSync.turnEnded(realSessionId.ifEmpty { sessionId })
+                // …and the record hears how it ended, when it ended short (TurnFeedback: a Stop was told at the Stop);
+                // only a turn that ran here counts, not the flag's first value when the chat opens
+                if (!streaming && nmWasStreaming) io.github.nanomuse.ui.feedback.TurnFeedback.turnEnded(realSessionId.ifEmpty { sessionId }, errored = _messages.value.lastOrNull()?.let { it.role == "assistant" && !it.error.isNullOrBlank() } == true)
+                nmWasStreaming = streaming
                 if (!streaming && nmPulledWhileStreaming) {
                     // a breath after the end: the turn's last rows are still being written
                     kotlinx.coroutines.delay(1_500)
@@ -6837,13 +6844,18 @@ class ChatViewModel(
         // prompt addendum, are settled first — they apply to every session.
         io.github.nanomuse.chat.SessionAddenda.onTurnFinished(sid)
         nmAllowanceHeadsUp()
-        _messages.value.lastOrNull { it.role == "assistant" }?.content?.let { text ->
+        // Only the reply this turn produced: a turn that failed before its own assistant
+        // message existed leaves the previous reply as the last one, with the error pinned on
+        // it, and a feed run that read that reply wrote yesterday's posts again under today's
+        // date (#637). The reply counts when it follows the turn's user message and carries
+        // no error.
+        val reply = nmReplyOfThisTurn()
+        reply?.let { text ->
             io.github.nanomuse.goals.GoalFlow.afterTurn(context, sid, text)
             io.github.nanomuse.feed.FeedFlow.afterTurn(context, sid, text)
         }
         val fc = nmFirstConversation
         if (!fc.isBoundTo(sid)) return
-        val reply = _messages.value.lastOrNull { it.role == "assistant" }?.content
         val phaseBefore = fc.phase
         if (fc.afterTurn(reply)) {
             // The chooser sits under the latest question, so it moves down when the model
@@ -6857,6 +6869,15 @@ class ChatViewModel(
             io.github.nanomuse.feed.FeedFlow.writeFirstDay(context)
         }
     }
+
+    /**
+     * The text of the assistant message this turn produced, or null when the turn left none:
+     * the last assistant message must come after the last user message and carry no error
+     * (a terminal error is pinned on the last assistant message, whichever turn wrote it).
+     */
+    private fun nmReplyOfThisTurn(): String? = io.github.nanomuse.chat.TurnReply.ofThisTurn(
+        _messages.value.map { io.github.nanomuse.chat.TurnReply.Row(it.role, it.content, it.error) },
+    )
     // ───────────────────────────────────────────────────────────────────────
 
     /**
@@ -10757,7 +10778,8 @@ Memory system (currently DISABLED):
 - SOUL.md (personality / identity) is unaffected by this toggle; the persona section above still applies."""
         }
         // nanoMuse: these former interpolation points stay empty; their unchanged text is emitted
-        // in the deterministic volatile suffix after RiskPolicy and Hands.
+        // in the deterministic volatile suffix after RiskPolicy and Hands. The Feed line below
+        // teaches the agent the read-only feedback contract without treating silence as dislike.
         val memoryToolListInStablePrefix = ""
         val memoryGuidanceInStablePrefix = ""
         val base = identitySection + """You should proactively use shell commands to accomplish the user's tasks — installing packages (apk add), writing and running scripts, managing files, networking, and any other operations a Linux terminal can perform.
@@ -10770,7 +10792,7 @@ Available tools:
 - browser_use: Web browsing (navigate, screenshot, click, type, get_text, scroll, scroll_and_collect, get_readable, get_backbone, fetch, etc.). Starts with a desktop Chrome user agent. Use screenshot to see the page.
   当 browser_use 触达 Google 登录 / OAuth 页（accounts.google.com、signin.google.com、myaccount.google.com、oauth2.googleapis.com 等）或网页返回 "disallowed_useragent" / 403 包含 "browser is not secure" 字样时，**不要重试或尝试登录** — Google 永久禁止 in-app WebView 完成登录，重试只会浪费 turn。改为告诉用户："此页面需要在系统 Chrome 完成登录" 并给出可点击的 Markdown link [在 Chrome 中打开](https://accounts.google.com/...)。点该 link 时 app 会跳出 Custom Tab；用户在 Chrome 完成操作后，请他**把所需结果（邮件正文 / 文档摘要 / 表格数据）粘贴回 chat**，你再继续帮他处理。这是 Android 平台限制，不是 bug。${memoryToolListInStablePrefix}
 
-Shared directory /var/minis/ (bidirectional read/write between shell and app):
+Sandbox directory /var/minis/ (writeability is stated per path):
   /var/minis/attachments/ — Media files (images, audio, video). Display inline with ![desc](minis://attachments/filename).
   /var/minis/workspace/   — Working files (scripts, data, configs). Link with [name](minis://workspace/filename).
   /var/minis/offloads/    — Auto-saved large outputs. Read with file_read.
@@ -10778,6 +10800,7 @@ Shared directory /var/minis/ (bidirectional read/write between shell and app):
   /var/minis/shared/      — Cross-session shared storage for artifacts and documents. Organize by project or topic (e.g. shared/myproject/, shared/datasets/). Do NOT store temporary files here.
   /var/minis/memory/GLOBAL.md    — Persistent global memory (read-only, user-maintained via Settings).
   /var/minis/memory/YYYY-MM-DD.md — Daily memory log.
+  /var/minis/feed/YYYY-MM-DD/NN.md — Read-only Feed posts. "liked: true" is explicit positive feedback; no liked field means only "not liked yet", never dislike. Use aggregate patterns to improve future Feed topics, not to infer a negative preference from silence.
   /var/minis/mounts/<name>/      — User-mounted external folders from Settings → Mount External Folders. Presence and names vary per user; check this directory first when the task references external/user files. Some mounts may be read-only — file_write / file_edit will reject writes with a clear error message.
 
 The minis:// URL scheme:
@@ -10906,7 +10929,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
         return io.github.nanomuse.chat.PromptCacheLayout.build(
             stableSections = listOf(
-                base,
+                io.github.nanomuse.chat.PromptDiet.prompt(base), // nanoMuse: the minis-* paragraphs condensed (PromptDiet)
                 io.github.nanomuse.guard.RiskPolicy.promptParagraph(),
                 io.github.nanomuse.hands.Hands.promptParagraph(context),
             ),
@@ -11960,6 +11983,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
     fun cancelStream() {
         AppLogger.info(TAG_STREAM, "cancelStream invoked _isStreaming=false (sid=$activeSessionId)")
+        if (_isStreaming.value) io.github.nanomuse.ui.feedback.TurnFeedback.stopped(activeSessionId) // nanoMuse: the record hears the Stop; the chat asks why, once (relay 0.31)
         streamJob?.cancel()
         _isStreaming.value = false
         // T-streaming-side-channel: flush any in-flight delta back into the

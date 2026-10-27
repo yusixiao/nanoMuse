@@ -53,7 +53,7 @@ temperature   = 0.3
 timeout       = 180                # seconds per request
 max_retries   = 5                  # exponential back-off on 429 / 5xx / timeouts
 stream        = true
-tool_mode     = "auto"             # "auto" | "native" | "prompt" — see below
+tool_mode     = "auto"             # "auto" | "native" | "prompt"; see below
 vision        = "auto"             # pictures attached in chat go to the model: "auto" | "on" | "off"
 pass_reasoning = false             # send reasoning_content back with assistant turns (some DeepSeek endpoints)
 extra_headers = {}                 # e.g. { "X-End-User-Id" = "nanomuse" }
@@ -133,11 +133,11 @@ Small models bend the protocol in predictable ways, and nanoMuse meets them half
 
 Set `max_tokens` to what the model can produce in one turn (4096 is fine for these) and keep `agent.max_context_messages` modest: a local 8B model with an 8k context window fills up fast once tool results start coming back.
 
-Models that emit `<think>…</think>` inside the content are handled: the reasoning is separated and shown only with `agent.show_thinking = true`.
+Models that emit `<think>…</think>` inside the content are handled: the reasoning is separated and shown only with `agent.show_thinking = true`. With that switch on, reasoning a provider streams (`reasoning_content` on a Chat Completions chunk, the reasoning deltas of the Responses API) is shown while the model thinks, in the console under a dim `⌗` line and in the web console's bubble, and folds into *Show thinking* once the answer begins; only the finished reasoning is kept with the reply.
 
 ## `[image]` and `[video]`
 
-Where the avatar studio's pictures and the avatar's clips come from when it is not the chat model's host. Both slots empty (the default) follows one order (the Models contract, 0.1.41): the chat provider's own picture model when it has one (the account's relay, Alibaba Cloud Bailian, and any catalogue provider with `image`: its `defaults.image`; `[llm] image_model` / `video_model` still name another), else the account's relay when you are signed in to nanoMuse Cloud, even while the chat model is elsewhere, else nothing. Clips the same way: the picture host when it speaks the video API, else the relay under the account key when signed in. Set a slot to draw somewhere else, or to draw at all when the chat model is DeepSeek, a ChatGPT plan or a local model and you are not signed in:
+Where the avatar studio's pictures and the avatar's clips come from when it is not the chat model's host. Both slots empty (the default) follow one order (the Models contract, 0.1.41): the chat provider's own media model when it has one (any catalogue provider with `image` / `video`, using its corresponding default; `[llm] image_model` / `video_model` still name another), then a signed-in relay only when its live menu explicitly offers that media kind, then the first provider of your own that does. The public nanoMuse Cloud menu offers no image- or video-generation model, so its users need a provider and API key of their own; an operator of a self-hosted relay may deliberately enable its legacy media proxy. Set a slot to draw somewhere else, or to draw at all when the chat model is DeepSeek, a ChatGPT plan or a local model:
 
 ```toml
 [image]
@@ -175,7 +175,9 @@ instructions         = ""              # extra rules appended to the system prom
 
 With `language = "auto"` the system prompt names the reply language and tells the model to answer in it: the language of the client's screens when the client sends one with the message (the web console does, as `language` on `POST /api/threads/{id}/send`; a `task` over the hub may), else the language of the latest user message, detected by script. A generic "reply in the user's language" instruction turned out to be unreliable with some models; naming it works. A fixed `language` wins over both.
 
-`max_context_images` is for the hands. A run on a screen appends a screenshot per step and the whole conversation goes up again on every step, so a dozen full-size pictures had passed the relay's body limit (413 `too_large`, 0.1.37). Only the newest four travel now, each downscaled to at most two megapixels; the older ones are replaced by a one-line note so the model still knows a screenshot was there. The desktop app's harness keeps the same budget on its side.
+`max_context_images` is for the hands. A run on a screen appends a screenshot per step and the whole conversation goes up again on every step, so a dozen full-size pictures had passed the relay's body limit (413 `too_large`, 0.1.37). Only the newest four travel now, each downscaled to at most two megapixels; the older ones are replaced by a one-line note so the model still knows a screenshot was there. The desktop app's harness counts bytes rather than pictures (its adapter takes no count): the base64 of a request's pictures is held to 2 MiB, about the newest four to eight screenshots, the older ones replaced by a line the same way.
+
+`max_context_messages` trims older history at a user-message boundary when possible. If a single turn fills the window, the runtime keeps the newest messages plus the complete tool exchange at the cutoff. This can exceed the configured message count by the messages needed to retain that exchange. Stored conversation history is unchanged.
 
 ## `[sync]`
 
@@ -201,7 +203,7 @@ remote_control = true
 name = ""            # empty: the host name
 ```
 
-`[cloud]` is the relay this runtime signs in to ([cloud.md](cloud.md)): `base_url` is its public address (your own relay's, after [self-hosting.md](self-hosting.md)); `required = false` lets the first run finish without an account, for a runtime that uses no relay at all; `sync` is the default of the account-wide *Data controls → Sync* switch, and the person's choice, once made, is what counts; `models = false` (the console's *Use nanoMuse Cloud models* switch, kept in app-settings) takes the account's models out of the automatic order of the hands, pictures and clips and out of the providers' listing while the sign-in stays, so nothing spends the allowance but an explicit *Use nanoMuse Cloud this time*. The account key itself is `NANOMUSE_CLOUD_KEY` in the vault.
+`[cloud]` is the relay this runtime signs in to ([cloud.md](cloud.md)): `base_url` is its public address (your own relay's, after [self-hosting.md](self-hosting.md)); `required = false` lets the first run finish without an account, for a runtime that uses no relay at all; `sync` is the default of the account-wide *Data controls → Sync* switch, and the person's choice, once made, is what counts; `models = false` (the console's *Use nanoMuse Cloud models* switch, kept in app-settings) takes every model advertised by that relay out of the automatic order and the providers' listing while sign-in stays, so nothing spends the allowance but an explicit *Use nanoMuse Cloud this time*. The public nanoMuse Cloud currently advertises chat and GUI models only; pictures and clips require a provider you add yourself. A self-hosted relay may advertise different capabilities. The account key itself is `NANOMUSE_CLOUD_KEY` in the vault.
 
 `[hub]` is this computer as one of the account's devices ([hub.md](hub.md)): `enabled` joins the hub whenever the account is signed in; `remote_control = false` answers other devices with `info` and nothing else; `name` is what the other devices call this one (empty: the host name). `device_id` is per installation and written by the app.
 
@@ -325,19 +327,21 @@ Besides the sources there is always *My contacts*, `<data_dir>/contacts.vcf`: th
 
 ### Web search
 
-Who answers `web_search`. DuckDuckGo needs nothing and is the default, but it is scraped rather than served: it rate-limits and breaks now and then. For searches that always work, name a provider with an API: [Brave Search](https://brave.com/search/api/), [Tavily](https://app.tavily.com/) or [Serply](https://serply.io/) (for Google results) with a key, [You.com](https://you.com/platform/api-keys) with or without one, or a [SearXNG](https://docs.searxng.org/) instance you run yourself (with `json` among its `search.formats`). The same choice is on the phone under *Connections → Web search*, where the key goes to the vault as `SEARCH_API_KEY` and *Test* runs one search.
+Who answers `web_search`. DuckDuckGo needs nothing and is the default, but it is scraped rather than served: it rate-limits and breaks now and then. For searches that always work, name a provider with an API: [Brave Search](https://brave.com/search/api/), [Tavily](https://app.tavily.com/) or [Serply](https://serply.io/) (for Google results) with a key, [You.com](https://you.com/platform/api-keys) or [Parallel](https://docs.parallel.ai/integrations/mcp/search-mcp) with or without one, or a [SearXNG](https://docs.searxng.org/) instance you run yourself (with `json` among its `search.formats`). The same choice is on the phone under *Connections → Web search*, where the key goes to the vault as `SEARCH_API_KEY` and *Test* runs one search.
 
 ```toml
 [connectors.search]
-provider = "duckduckgo"          # duckduckgo | brave | tavily | serply | you | searxng
-api_key  = "{{vault:SEARCH_API_KEY}}"   # brave / tavily / serply, and you if you have one: nanomuse vault set SEARCH_API_KEY
+provider = "duckduckgo"          # duckduckgo | brave | tavily | serply | you | parallel | searxng
+api_key  = "{{vault:SEARCH_API_KEY}}"   # brave / tavily / serply, and you or parallel if you have one: nanomuse vault set SEARCH_API_KEY
 base_url = ""                    # searxng: your instance, e.g. "http://127.0.0.1:8080"
 fallback = true                  # false: a failed search fails instead of going to DuckDuckGo
 ```
 
 You.com without a key goes to `api.you.com` and allows 100 searches a day per address, with no account; past that the search says so and DuckDuckGo answers once. With a key it goes to `ydc-index.io`, the keyed Search API with higher limits; the Sentinel shows whichever host the search really uses. Requests to You.com carry the user agent `youdotcom-integration/nano-muse-nanomuse`, at the vendor's request, so they can tell nanoMuse's traffic apart; nothing else is sent, and no other provider gets it.
 
-Whichever is picked, a search that fails (a lapsed key, a rate limit, an instance that is down) is answered by DuckDuckGo instead, once, with a note on top of the results saying so, so the task goes on (the query then reaches DuckDuckGo's host as well as the one you chose; set `fallback = false` under `[connectors.search]` if that must not happen); `nanomuse doctor` reports a provider that is missing what it needs. The `region` argument of the tool (`cn-zh`, `us-en`) is passed to every provider in its own terms. The provider's host is a destination you chose, so a search after private data was read does not need approval the way an unknown host would (see [taint tracking](sentinel.md#taint-tracking)); `web_fetch` of a result still does.
+Parallel is reached through the `web_search` tool of its [Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) at `search.parallel.ai`, one call per search with the query as both the objective and the one keyword query. Without a key it is free, in Parallel's Fast mode, at lower rate limits, with no account; a random session id, the same for every search until the runtime restarts, lets Parallel count that free use. A key from [platform.parallel.ai](https://platform.parallel.ai/) is sent as a Bearer token for higher limits. Each result's snippet is its excerpts joined on one line. When Parallel answers with an error (a tool error, a rate limit, a refused key, a reply with no results), the error is what the note or the failed search says.
+
+Whichever is picked, a search that fails (a lapsed key, a rate limit, an instance that is down) is answered by DuckDuckGo instead, once, with a note on top of the results saying so, so the task goes on (the query then reaches DuckDuckGo's host as well as the one you chose; set `fallback = false` under `[connectors.search]` if that must not happen); `nanomuse doctor` reports a provider that is missing what it needs. The `region` argument of the tool (`cn-zh`, `us-en`) is passed to every provider that takes one, in its own terms; Tavily and Parallel take none. The provider's host is a destination you chose, so a search after private data was read does not need approval the way an unknown host would (see [taint tracking](sentinel.md#taint-tracking)); `web_fetch` of a result still does.
 
 ## `[triggers]`
 
@@ -356,7 +360,7 @@ Mail triggers need the [email connector](#email); event triggers need a [calenda
 ```toml
 [browser]
 enabled    = true      # pip install "nanomuse[browser]" && playwright install chromium
-backend    = "auto"    # auto | playwright | device — the phone's own WebView when a nanoMuse app is connected, Chromium otherwise
+backend    = "auto"    # auto | playwright | device; device: the phone's own WebView when a nanoMuse app is connected, Chromium otherwise
 profile    = ""        # mobile | desktop | "" (mobile on the phone, desktop on a computer)
 headless   = true      # Playwright only
 timeout_ms = 30000
@@ -369,9 +373,9 @@ Logins made in Chromium live in `<workspace>/browser-profile/` and survive a res
 ```toml
 [hands]
 enabled         = false    # the switch is Devices → Hands on this computer in the app
-backend         = "auto"   # auto | desktop | pyautogui | xdotool (X11) — desktop: the desktop app's own hands (auto takes them when the app set NANOMUSE_OPERATOR_URL)
-mode            = "auto"   # auto | screen | window — window: one app's window on macOS, events to its process, your mouse untouched; auto = window on macOS once an app is named
-coords          = "pixels" # pixels | norm1000 — what the model's x, y mean: pixels of the picture it was shown (default), or a 0–1000 grid over it
+backend         = "auto"   # auto | desktop | pyautogui | xdotool (X11); desktop: the desktop app's own hands (auto takes them when the app set NANOMUSE_OPERATOR_URL)
+mode            = "auto"   # auto | screen | window; window: one app's window on macOS, events to its process, your mouse untouched; auto = window on macOS once an app is named
+coords          = "pixels" # pixels | norm1000; what the model's x, y mean: pixels of the picture it was shown (default), or a 0–1000 grid over it
 max_image_width = 1600
 settle_s        = 0.6
 ```
@@ -388,7 +392,7 @@ With this on, the agent can look at a connected phone's screen and tap, type and
 [gui]
 enabled          = false
 provider         = "openai"          # the operator's own model; openai | openai_responses | chatgpt | a catalogue id
-model            = ""                # empty: the main [llm] model does it — it must take images, the screen is a picture
+model            = ""                # empty: automatic (the order below: the relay's hands model, the chat provider's own, or the chat model); whichever it is must take images, the screen is a picture
 base_url         = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key          = "{{vault:GUI_API_KEY}}"
 max_steps        = 0                 # the most one phone_task may take; 0 = no cap
@@ -397,7 +401,7 @@ reconnect_grace_s = 30.0             # how long a running task waits for a phone
 sensitive_words  = ["确认支付", "立即付款", "转账", "提交订单", "发送", "删除", "pay now", "place order", "send", "delete"]  # a tap on these asks first; a shortened sample, the default has 22 words
 ```
 
-`base_url` and `api_key` fall back to `[llm]` when empty. An empty `model` follows one order (the Models contract, 0.1.41): with the relay as the chat model, the relay's hands model (`qwen3.8-27b` unless `/v1/models` names another), not the chat model (the chat default reads pictures, but the hands want the model trained to point at things on a screen); with an own provider the catalogue lists with `vision`, that provider's own hands model (`defaults.hands`, `qwen3.8-27b` on Bailian, `glm-4.6v` on Zhipu) on the chat key; with a provider that cannot see (a local server by its catalogue id or host) and an account signed in, the relay's hands model under the account key, the chat model staying where it is; else the chat model, as on a host the catalogue does not list. An explicit `model` always wins. A key is only needed when the operator's `base_url` is a different service. Traces of every phone task go to `<data_dir>/phone-traces/` (the last 200 are kept; `nanomuse phone traces`).
+`base_url` and `api_key` fall back to `[llm]` when empty. An empty `model` follows one order (the Models contract, 0.1.41): with the relay as the chat model, the model that `/v1/models` recommends for `gui` (the public Cloud currently recommends `Qwen/Qwen3.6-27B-FP8`, the same multimodal model it uses for chat); with an own provider the catalogue lists with `vision`, that provider's own hands model (`defaults.hands`, `qwen3.8-27b` on Bailian, `glm-4.6v` on Zhipu) on the chat key; with a provider that cannot see (a local server by its catalogue id or host) and an account signed in, the relay's hands model under the account key, the chat model staying where it is; else the chat model, as on a host the catalogue does not list. An explicit `model` always wins. A key is only needed when the operator's `base_url` is a different service. Traces of every phone task go to `<data_dir>/phone-traces/` (the last 200 are kept; `nanomuse phone traces`).
 
 The app layer sets this slot through `PUT /api/connections/gui`, which takes `provider` as `PUT /api/connections/llm` does: a protocol (`openai`, `openai_responses`), `chatgpt`, or a catalogue id such as `bailian`, which brings its endpoint along (`base_url` may stay empty); an id the catalogue lacks, or one whose protocol the runtime does not speak, is 400 with the choices. The answer (and `GET /api/connections` → `gui`) carries `provider` as set, `provider_id` (the catalogue entry a protocol plus URL stands for), `effective_model` and `effective_source` (`gui`, `chat` or `cloud`).
 
@@ -418,6 +422,8 @@ url                = "http://localhost:8000/mcp"   # streamable HTTP; falls back
 risk               = "sensitive"
 egress             = true         # counts as network egress for taint tracking
 reads_private_data = true         # taints the conversation when called
+connect_timeout_s  = 30           # the handshake (connect, initialize, the tool list); over it the server is skipped
+call_timeout_s     = 120          # one call; over it the call fails and the run goes on
 
 # one tool of a server may differ from the server's defaults
 [mcp.servers.tools.list_events]
@@ -426,6 +432,8 @@ risk               = "moderate"
 risk               = "sensitive"
 reads_private_data = false
 ```
+
+`egress` left out is read from the address: a `url` on another host sends every argument of a call there, so it counts as egress to that host (taint tracking asks before a call that follows private data, unless the host is on `egress_allowlist`); a `command` or a loopback address does not. Set `egress` to say otherwise. The approval card and the audit log name the tool and the shape of its arguments (a string's length, a list's length, an object's keys), never their values.
 
 `tools` is optional and per tool name (without the `<server>__` prefix); anything not set falls back to the server's values. It is how the phone's own tools get their defaults: on a phone the app's capabilities appear as the server `device` without any configuration ([device.md](device.md)), with the per-tool table from `nanomuse/runtime.py`.
 

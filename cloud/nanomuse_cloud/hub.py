@@ -8,7 +8,7 @@ command's approval, which is decided on the device that would carry it out.
 
 Frames are JSON text. From a device:
 
-    {"type":"hello", "key": "nm_…"?, "device": {"id","name","kind","os","version","actions":[…]}}
+    {"type":"hello", "key": "nm_…"?, "device": {"id","name","kind","os","version","actions":[…], "llm"?: {"provider","model"}}}
     {"type":"call",   "id","to","action","args"}         ask another device to do something
     {"type":"result", "id","ok", "body" | "error","message"}   the answer to a call received
     {"type":"event",  "id","body"}                        progress on a call still running
@@ -48,7 +48,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from . import __version__
 from . import client as _client
 from .db import Database
-from .service import Caller, Cloud, CloudError
+from .service import Caller, Cloud, CloudError, Pace
 
 log = logging.getLogger("nanomuse_cloud.hub")
 
@@ -73,6 +73,15 @@ FLOOD_CLOSE_AFTER = 600
 # the largest size.
 SEND_QUEUE_FRAMES = 512
 SEND_QUEUE_BYTES = 32 * 1024 * 1024
+
+# 0.30: what comes before the first frame is bounded too. One address may open this many
+# sockets a minute (every device of a household reconnecting after the router came back
+# fits several times over): over it, the socket is closed before any key is checked. One
+# account may have this many sockets open at once (phones, computers, browser tabs): a
+# further one is closed once its hello has named the account, before its device row is
+# written. Both close with 4008 `too_many_connections`.
+HELLOS_PER_MINUTE = 60
+MAX_ONLINE_PER_ACCOUNT = 32
 
 
 class Bucket:
@@ -111,14 +120,17 @@ class Connection:
     version: str = ""
     actions: list[str] = field(default_factory=list)
     ip: str = ""  # 0.10: where the socket came from, for the operator
+    llm_provider: str = ""  # 0.28: what the device said it runs its chats under (ids only)
+    llm_model: str = ""
     connected_at: int = field(default_factory=now)
     closed: bool = False
     # the outbound queue: send() appends, the writer task drains in order
-    queue: deque[str] = field(default_factory=deque)
+    queue: deque[tuple[str, int]] = field(default_factory=deque)  # (frame, its UTF-8 size)
     queued_bytes: int = 0
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     writer: asyncio.Task | None = None
     overflowed: bool = False  # closed for not reading fast enough
+    closer: asyncio.Task | None = None  # the close of an overflowed socket, held until it is done
     frames: Bucket = field(default_factory=lambda: Bucket(FRAMES_PER_S, 2 * FRAMES_PER_S))
     bytes: Bucket = field(default_factory=lambda: Bucket(BYTES_PER_S, 2 * BYTES_PER_S))
     dropped: int = 0  # frames dropped in a row for flooding
@@ -157,16 +169,20 @@ class Connection:
         if self.closed:
             return
         text = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
-        if len(self.queue) >= SEND_QUEUE_FRAMES or self.queued_bytes + len(text) > SEND_QUEUE_BYTES:
+        # bytes on the wire, not characters: a Chinese or emoji frame is three to four times
+        # its character count in UTF-8, and the limits are stated in bytes
+        size = len(text.encode("utf-8"))
+        if len(self.queue) >= SEND_QUEUE_FRAMES or self.queued_bytes + size > SEND_QUEUE_BYTES:
             log.warning(
                 "hub: %s is not reading (%d frames, %d bytes waiting); closing", self.device_id[:12], len(self.queue), self.queued_bytes
             )
             self.overflowed = True
             self.stop()
-            asyncio.get_running_loop().create_task(self._close(4009, "slow_consumer"))
+            # kept on the connection: a task nothing references may be collected before it runs
+            self.closer = asyncio.get_running_loop().create_task(self._close(4009, "slow_consumer"))
             return
-        self.queue.append(text)
-        self.queued_bytes += len(text)
+        self.queue.append((text, size))
+        self.queued_bytes += size
         self.wake.set()
 
     async def _drain(self) -> None:
@@ -175,8 +191,8 @@ class Connection:
                 self.wake.clear()
                 await self.wake.wait()
                 continue
-            text = self.queue.popleft()
-            self.queued_bytes -= len(text)
+            text, size = self.queue.popleft()
+            self.queued_bytes -= size
             try:
                 await self.ws.send_text(text)
             except Exception as e:  # the socket went away under us; the receive loop notices too
@@ -212,6 +228,10 @@ class Hub:
         self.flood_closes = 0
         # ... and sockets closed because they stopped reading (SEND_QUEUE_*)
         self.slow_closes = 0
+        # ... and sockets refused before their hello: an address opening too many, an
+        # account with too many open (0.30)
+        self.refused_connections = 0
+        self._hellos = Pace(HELLOS_PER_MINUTE, 60.0)
 
     # -- presence -------------------------------------------------------------------
 
@@ -228,6 +248,7 @@ class Hub:
             "dropped_frames": self.dropped_total,
             "flood_closes": self.flood_closes,
             "slow_closes": self.slow_closes,
+            "refused_connections": self.refused_connections,
         }
 
     def devices(self, account_id: str) -> list[dict]:
@@ -352,6 +373,12 @@ class Hub:
     async def serve(self, ws: WebSocket, caller: Caller | None) -> None:
         """The whole life of one connection: hello, then frames until it drops."""
         await ws.accept()
+        ip = _client.current().ip
+        if ip and not self._hellos.allow(ip):
+            self.refused_connections += 1
+            log.info("hub: over %d sockets a minute from one address; refused", HELLOS_PER_MINUTE)
+            await self._close(ws, 4008, "too_many_connections")
+            return
         try:
             raw = await asyncio.wait_for(ws.receive_text(), HELLO_TIMEOUT_S)
         except (TimeoutError, WebSocketDisconnect, KeyError):
@@ -375,6 +402,22 @@ class Hub:
         except CloudError as e:
             await ws.send_text(json.dumps({"type": "error", "code": e.code, "message": e.message}))
             await self._close(ws, 4002, e.code)
+            return
+        live = self.online.get(conn.account_id, {})
+        if conn.device_id not in live and len(live) >= MAX_ONLINE_PER_ACCOUNT:
+            # a device taking its own place again is fine; a thirty-third is not
+            self.refused_connections += 1
+            log.info("hub: account %s has %d devices connected; one more refused", conn.account_id[:8], len(live))
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "code": "too_many_connections",
+                        "message": f"At most {MAX_ONLINE_PER_ACCOUNT} devices of one account are connected at once",
+                    }
+                )
+            )
+            await self._close(ws, 4008, "too_many_connections")
             return
 
         await self._attach(conn)
@@ -400,10 +443,11 @@ class Hub:
                     # is JSON text (docs/hub.md); below it is answered with bad_frame and the
                     # socket stays open — it still counts towards the flood limit.
                     raw = None
-                if raw is not None and len(raw) > self.frame_limit:
+                size = len(raw.encode("utf-8")) if raw is not None else 0
+                if raw is not None and size > self.frame_limit:
                     await conn.send({"type": "error", "code": "too_large", "message": f"Frames are capped at {self.frame_limit} bytes"})
                     continue
-                if conn.over_rate(len(raw or "")):
+                if conn.over_rate(size):
                     self.dropped_total += 1
                     if conn.dropped >= FLOOD_CLOSE_AFTER:
                         self.flood_closes += 1
@@ -437,12 +481,32 @@ class Hub:
         if kind not in KINDS:
             raise CloudError(400, "bad_device", "kind must be phone, computer or web")
         device_id = str(dev.get("id") or "")
-        if kind == "web" and not device_id:
+        if caller.hub_device_id:
+            # A credential is an installation identity, not an account-wide bearer.
+            # Browser clients may continue to omit their server-assigned id on reconnect.
+            if kind != caller.hub_device_kind:
+                raise CloudError(400, "bad_device", "This credential belongs to another device kind")
+            if kind == "web" and not device_id:
+                device_id = caller.hub_device_id
+            if device_id != caller.hub_device_id:
+                raise CloudError(400, "bad_device", "This credential belongs to another device id")
+        elif kind == "web" and not device_id:
             device_id = "web-" + uuid.uuid4().hex[:12]
         if not _ID.match(device_id):
             raise CloudError(400, "bad_device", "device id: 4–80 letters, digits, . _ : -")
+        if not caller.hub_device_id and not self.db.bind_key_to_hub_device(caller.key_hash, caller.account_id, device_id, kind):
+            # An unbound credential (issued by an older relay, or to a client that does not
+            # send its identity at sign-in yet) registers its identity at its first hello.
+            # It takes an id another live key holds only when it comes from a later code or
+            # password sign-in on that installation; a session key never does.
+            raise CloudError(400, "bad_device", "That device id belongs to another credential")
         name = str(dev.get("name") or "").strip()[:60] or {"phone": "Phone", "computer": "Computer", "web": "Browser"}[kind]
         actions = [str(a)[:40] for a in dev.get("actions") or [] if isinstance(a, str)][:64]
+        # 0.28: optionally, which provider and model the device runs its chats under (a
+        # key of the person's own, or "nanomuse" for the relay) — two ids, never a key;
+        # the console counts them in aggregate (docs/hub.md, docs/privacy.md)
+        llm = dev.get("llm") if isinstance(dev.get("llm"), dict) else {}
+        llm_provider, llm_model = _llm_ids(llm)
         return Connection(
             ws=ws,
             account_id=caller.account_id,
@@ -454,6 +518,8 @@ class Hub:
             version=str(dev.get("version") or "")[:40],
             actions=actions,
             ip=_client.current().ip,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
         )
 
     async def _attach(self, conn: Connection) -> None:
@@ -465,7 +531,17 @@ class Hub:
         account[conn.device_id] = conn
         conn.start()
         if conn.kind != "web":
-            self.db.upsert_device(conn.account_id, conn.device_id, conn.name, conn.kind, conn.os, conn.version, json.dumps(conn.actions))
+            self.db.upsert_device(
+                conn.account_id,
+                conn.device_id,
+                conn.name,
+                conn.kind,
+                conn.os,
+                conn.version,
+                json.dumps(conn.actions),
+                conn.llm_provider,
+                conn.llm_model,
+            )
         # the id and the account masked like every other line; the device's name is the
         # person's own words and stays out of the log
         log.info("hub: %s %s connected; account %s has %d online", conn.kind, conn.device_id[:12], conn.account_id[:8], len(account))
@@ -532,7 +608,17 @@ class Hub:
             if name:
                 conn.name = name
                 if conn.kind != "web":
-                    self.db.upsert_device(conn.account_id, conn.device_id, name, conn.kind, conn.os, conn.version, json.dumps(conn.actions))
+                    self.db.upsert_device(
+                        conn.account_id,
+                        conn.device_id,
+                        name,
+                        conn.kind,
+                        conn.os,
+                        conn.version,
+                        json.dumps(conn.actions),
+                        conn.llm_provider,
+                        conn.llm_model,
+                    )
                 await self.broadcast_devices(conn.account_id)
         elif kind == "forget":
             try:
@@ -564,6 +650,12 @@ class Hub:
             await conn.send({"type": "error", "id": call_id, "code": "self_call", "message": "That is this device"})
             return
         await self._sweep()
+        if (conn.account_id, call_id) in self.pending:
+            # the id of a call still waiting: a second one would take its place and the first
+            # answer would land on the wrong call (or on none). Ids are the caller's to make
+            # unique; this one is refused and the first call goes on.
+            await conn.send({"type": "error", "id": call_id, "code": "duplicate_call", "message": "A call with that id is still waiting"})
+            return
         self.pending[(conn.account_id, call_id)] = Pending(call_id=call_id, caller=conn.device_id, target=to, account_id=conn.account_id)
         args = frame.get("args") if isinstance(frame.get("args"), dict) else {}
         await target.send({"type": "call", "id": call_id, "from": conn.brief(), "action": action, "args": args})
@@ -595,6 +687,20 @@ class Hub:
                 caller = self.online.get(p.account_id, {}).get(p.caller)
                 if caller:
                     await caller.send({"type": "error", "id": p.call_id, "code": "timeout", "message": "the device did not answer in time"})
+
+
+_LLM_ID = re.compile(r"^[A-Za-z0-9._:/ -]{1,80}$")
+
+
+def _llm_ids(llm: dict) -> tuple[str, str]:
+    """The provider and model ids a hello's ``device.llm`` names, each a plain id (letters,
+    digits, ``. _ : / -``) or nothing; anything shaped like a secret, a URL or a sentence
+    is dropped rather than kept."""
+    out = []
+    for key, limit in (("provider", 60), ("model", 80)):
+        v = str(llm.get(key) or "").strip()
+        out.append(v[:limit] if v and len(v) <= limit and _LLM_ID.match(v) and "://" not in v else "")
+    return out[0], out[1]
 
 
 def _loads(raw: str):

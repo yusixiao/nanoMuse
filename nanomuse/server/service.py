@@ -9,6 +9,7 @@ user can fire off several requests without waiting for the last one to finish.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import re
@@ -34,6 +35,7 @@ from nanomuse.config import LLMSettings, Settings
 from nanomuse.goals import Goal
 from nanomuse.hub.service import HubService
 from nanomuse.llm import BaseLLM
+from nanomuse.llm import session as llm_session
 from nanomuse.llm.factory import create_llm, llm_ready
 from nanomuse.logger import logger
 from nanomuse.memory.consolidate import TidyReport, tidy
@@ -53,10 +55,12 @@ from nanomuse.server.events import (
     now_iso,
 )
 from nanomuse.server.failures import failure_notice
+from nanomuse.server.outbox import Delivery, DeliveryOutbox
 from nanomuse.server.providers import ChatGPTSignIn, Providers
 from nanomuse.server.push import PushService
 from nanomuse.server.webui import WebUI, current_thread
 from nanomuse.sync import ConversationSync, parse_mention, system_note
+from nanomuse.telemetry import telemetry
 from nanomuse.tools.browser import Browser
 from nanomuse.tools.coding_tool import CodingAgents
 from nanomuse.tools.reminder_tools import Reminders
@@ -380,6 +384,7 @@ class MuseService:
         self.data_dir: Path = settings.data_dir
         self.threads_dir = self.data_dir / "threads"
         self.threads_dir.mkdir(parents=True, exist_ok=True)
+        self.deliveries = DeliveryOutbox(self.data_dir / "scheduled-deliveries.db")
         self.bus = EventBus()
         self.threads: dict[str, Thread] = {}
         self._base_instructions = settings.agent.instructions
@@ -443,6 +448,9 @@ class MuseService:
         self.app.tools.add(CodingAgents(coding=self.coding))
         self.token = self._load_token()
         self._scheduler: asyncio.Task[None] | None = None
+        # webhook deliveries accepted, by trigger id (monotonic seconds): the rate limit's
+        # word while the first run is still going (deliver_hook)
+        self._hook_accepted: dict[str, float] = {}
         # what start() is busy with, for /api/health and the log while the app comes up
         self.starting: str = "not started"
         self._tidying = False
@@ -485,6 +493,7 @@ class MuseService:
         started = time.monotonic()
         await self._step("tools", self.app.start(), 90)
         self._started = True
+        self._recover_deliveries()
         await self._step("cloud account and hub", self.hub.start(), 30)
         self.sync.start()
         self._scheduler = asyncio.create_task(self._goal_scheduler(), name="goal-scheduler")
@@ -508,10 +517,17 @@ class MuseService:
             logger.warning("starting: {} failed: {}: {}", name, type(exc).__name__, exc)
 
     async def stop(self) -> None:
-        if self._scheduler:
-            self._scheduler.cancel()
         loop = asyncio.get_running_loop()
         workers: list[asyncio.Task[None]] = []
+        scheduler = self._scheduler
+        if scheduler is not None and not scheduler.done() and scheduler.get_loop() is loop:
+            # the scheduler may be mid-pass (reading a mailbox, writing a delivery, asking a
+            # model for the Feed): it winds down with the workers, before the stores close
+            scheduler.cancel()
+            workers.append(scheduler)
+        elif scheduler is not None:
+            scheduler.cancel()
+        self._scheduler = None
         for t in self.threads.values():
             work = t.worker
             if work is None or work.done() or work.get_loop() is not loop:
@@ -540,6 +556,7 @@ class MuseService:
                 )
         for t in self.threads.values():
             t.timeline.flush()
+        self.deliveries.close()
         await self.chatgpt.close()
         if self._started:
             await self.sync.stop()
@@ -1058,6 +1075,60 @@ class MuseService:
         self.ui.emit(
             {"type": "notice", "level": "info", "text": STOPPED_NOTICE, "thread": thread.id}
         )
+        # the stop itself; the person's reason, if they give one, follows as its own note
+        telemetry.event(
+            "turn.ended",
+            {"ended": "aborted", "turn_no": agent.turns},
+            turn=agent.last_call,
+            conversation=thread.id,
+        )
+
+    # ------------------------------------------------------------------ feedback
+    FEEDBACK_VOTES = ("up", "down", "")
+    FEEDBACK_REASONS = ("wrong", "unhelpful", "unsafe", "slow", "other", "")
+    STOP_REASONS = ("wrong", "slow", "changed_mind", "done", "other", "skipped")
+
+    def feedback(
+        self, thread_id: str, event_id: str, vote: str, reason: str = ""
+    ) -> dict[str, Any]:
+        """A thumb up or down on a reply (``vote`` "" takes it back), with a word on why
+        when the person gave one. The bubble keeps the mark; the account's record hears
+        ``turn.feedback`` for the turn the reply came from, when the runtime is signed in.
+        The reply's words stay here."""
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            raise KeyError(thread_id)
+        if vote not in self.FEEDBACK_VOTES:
+            raise ValueError("vote is up, down or empty")
+        if reason not in self.FEEDBACK_REASONS:
+            raise ValueError("reason is one of " + ", ".join(r for r in self.FEEDBACK_REASONS if r))
+        ev = thread.timeline.get(event_id)
+        if ev is None or ev.get("type") != "assistant":
+            raise KeyError(event_id)
+        self.ui.patch(thread_id, event_id, feedback=vote)
+        turn = (str(ev.get("turn") or ""), str(ev.get("turn_source") or ""))
+        if not turn[0]:
+            turn = thread.agent.last_call
+        data: dict[str, Any] = {"vote": vote or "none", "turn_no": thread.agent.turns}
+        if reason:
+            data["reason"] = reason
+        telemetry.event("turn.feedback", data, turn=turn, conversation=thread_id)
+        return ev
+
+    def stop_reason(self, thread_id: str, reason: str) -> None:
+        """Why the person pressed Stop, in one of a few words (``skipped`` when they did not
+        say); ``turn.stopped`` in the record for the run that was stopped."""
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            raise KeyError(thread_id)
+        if reason not in self.STOP_REASONS:
+            raise ValueError("reason is one of " + ", ".join(self.STOP_REASONS))
+        telemetry.event(
+            "turn.stopped",
+            {"reason": reason, "turn_no": thread.agent.turns},
+            turn=thread.agent.last_call,
+            conversation=thread_id,
+        )
 
     def clear_thread(self, thread_id: str) -> bool:
         thread = self.threads.get(thread_id)
@@ -1081,6 +1152,7 @@ class MuseService:
         files: list[str] | None = None,
         language: str = "",
         via: str = "",
+        delivery: str = "",
     ) -> dict[str, Any]:
         """Queue a message for a thread. Returns the timeline event that was created.
 
@@ -1166,11 +1238,16 @@ class MuseService:
             )
             if label:
                 thread.purposes[text] = label
+        run = llm_session.run_of(source)
         if once is not None:
-            thread.inbox.put_nowait(Incoming(text, attachments, language, once[0], once[1]))
+            thread.inbox.put_nowait(
+                Incoming(text, attachments, language, once[0], once[1], delivery, run=run)
+            )
         else:
             thread.inbox.put_nowait(
-                Incoming(text, attachments, language) if attachments or language else text
+                Incoming(text, attachments, language, delivery=delivery, run=run)
+                if attachments or language or delivery or run != "person"
+                else text
             )
         self._ensure_worker(thread)
         return event
@@ -1268,15 +1345,24 @@ class MuseService:
                     )
                     self.ui.begin_run(thread.id, background=purpose, model_used=incoming.model)
                     final = await thread.agent.run(
-                        text, purpose=purpose, files=incoming.files, language=incoming.language
+                        text,
+                        purpose=purpose,
+                        files=incoming.files,
+                        language=incoming.language,
+                        run=incoming.run,
                     )
                     quiet, final = (
                         prompts.split_quiet(final or "") if purpose else (False, final or "")
                     )
                     self._finish_run(thread, purpose, final.strip(), quiet)
+                    if incoming.delivery:
+                        self._complete_delivery(incoming.delivery)
                 except asyncio.CancelledError:
                     if thread.stopping:
                         self._settle_stopped(thread)
+                        # the person stopped this run: the occurrence is over, not owed
+                        if incoming.delivery:
+                            self._complete_delivery(incoming.delivery)
                     raise
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("thread {} failed", thread.id)
@@ -1286,6 +1372,12 @@ class MuseService:
                     self.ui.emit(notice)
                     if thread.agent.state.value == "error":
                         thread.agent.state = thread.agent.state.__class__.IDLE
+                    # The attempt happened and the failure is on screen: the reminder, the
+                    # routine or the trigger moves on to its next time rather than standing
+                    # due until a restart. Only a run the process never finished (a crash,
+                    # a shutdown) is replayed at the next start.
+                    if incoming.delivery:
+                        self._complete_delivery(incoming.delivery)
                 finally:
                     self.ui.end_run(thread.id)
                     thread.agent.inbox = None
@@ -1513,18 +1605,79 @@ class MuseService:
             kind="background",
         )
 
+    # ---------------------------------------------------------- durable scheduled work
+    def _queue_delivery(self, delivery: Delivery) -> None:
+        self.send(
+            delivery.thread if delivery.thread in self.threads else MAIN_THREAD,
+            delivery.text,
+            source=delivery.kind,
+            label=delivery.label,
+            delivery=delivery.id,
+        )
+
+    def _recover_deliveries(self) -> None:
+        """Finish source acknowledgements, then replay work claimed before a crash."""
+        for delivery in self.deliveries.unfinalized():
+            self._finalize_delivery(delivery)
+        for delivery in self.deliveries.pending():
+            self._queue_delivery(delivery)
+
+    def _complete_delivery(self, delivery_id: str) -> None:
+        delivery = self.deliveries.complete(delivery_id)
+        if delivery is not None:
+            self._finalize_delivery(delivery)
+
+    def _finalize_delivery(self, delivery: Delivery) -> None:
+        if delivery.kind == "reminder":
+            self.app.reminders.mark_fired(delivery.source_id)
+            self.bus.publish({"kind": "reminders"})
+        elif delivery.kind == "goal_check":
+            self.app.goals.mark_checked_in(delivery.source_id)
+        elif delivery.kind == "trigger":
+            self.app.triggers.mark_fired(delivery.source_id, delivery.occurrence)
+            self.bus.publish({"kind": "triggers"})
+        self.deliveries.finalized(delivery.id)
+
+    def _claim_delivery(
+        self,
+        source_key: str,
+        *,
+        kind: str,
+        source_id: str,
+        occurrence: str,
+        thread: str,
+        text: str,
+        label: str,
+    ) -> Delivery | None:
+        delivery = self.deliveries.claim(
+            source_key,
+            kind=kind,
+            source_id=source_id,
+            occurrence=occurrence,
+            thread=thread,
+            text=text,
+            label=label,
+        )
+        if delivery is not None:
+            self._queue_delivery(delivery)
+        return delivery
+
     # ------------------------------------------------------------------ goals
-    def advance_goal(self, goal_id: str) -> Goal:
+    def advance_goal(self, goal_id: str, occurrence: str = "") -> Goal:
         goal = self.app.goals.get(goal_id)
         if goal is None:
             raise KeyError(goal_id)
         if goal.status != "active":
             raise ValueError(f"goal is {goal.status}")
         surfacing = prompts.SURFACING.get(self.profile.proactivity, prompts.SURFACING["default"])
-        self.send(
-            MAIN_THREAD,
-            prompts.ADVANCE_GOAL_PROMPT.format(goal=goal.render(), surfacing=surfacing),
-            source="goal",
+        stamp = occurrence or new_id()
+        self._claim_delivery(
+            f"goal:{goal.id}:{stamp}",
+            kind="goal",
+            source_id=goal.id,
+            occurrence=stamp,
+            thread=MAIN_THREAD,
+            text=prompts.ADVANCE_GOAL_PROMPT.format(goal=goal.render(), surfacing=surfacing),
             label=f"Working on your goal: {goal.title}",
         )
         return goal
@@ -1598,17 +1751,20 @@ class MuseService:
             raise KeyError(goal_id)
         if goal.status != "active":
             raise ValueError(f"goal is {goal.status}")
-        self.send(
-            MAIN_THREAD,
-            prompts.CHECK_IN_PROMPT.format(
+        occurrence = goal.next_check_in or new_id()
+        self._claim_delivery(
+            f"goal-check:{goal.id}:{occurrence}",
+            kind="goal_check",
+            source_id=goal.id,
+            occurrence=occurrence,
+            thread=MAIN_THREAD,
+            text=prompts.CHECK_IN_PROMPT.format(
                 goal=goal.render(),
                 today=datetime.now().astimezone().strftime("%A, %Y-%m-%d"),
                 quiet=prompts.QUIET_MARKER,
             ),
-            source="goal",
             label=f"Check-in: {goal.title}",
         )
-        self.app.goals.mark_checked_in(goal.id)
         return goal
 
     def _run_due_check_ins(self) -> None:
@@ -1664,15 +1820,16 @@ class MuseService:
         now = datetime.now().astimezone().strftime("%A, %Y-%m-%d %H:%M")
         template = prompts.REMINDER_PROMPT if item.kind == "remind" else prompts.ROUTINE_PROMPT
         label = ("Reminder: " if item.kind == "remind" else "Routine: ") + _short(item.text)
-        self.send(
-            thread,
-            template.format(now=now, text=item.text, quiet=prompts.QUIET_MARKER),
-            source="reminder",
+        delivery = self._claim_delivery(
+            f"reminder:{item.id}:{item.next_at}",
+            kind="reminder",
+            source_id=item.id,
+            occurrence=item.next_at,
+            thread=thread,
+            text=template.format(now=now, text=item.text, quiet=prompts.QUIET_MARKER),
             label=label,
         )
-        fired = self.app.reminders.mark_fired(item.id)
-        self.bus.publish({"kind": "reminders"})
-        return fired or item
+        return item if delivery is not None else (self.app.reminders.get(item.id) or item)
 
     def _run_due_reminders(self) -> None:
         """A time the user named is kept whatever the proactivity level or the quiet hours;
@@ -1745,8 +1902,7 @@ class MuseService:
             raise KeyError(trigger_id)
         if item.status != "active":
             raise ValueError(f"trigger is {item.status}")
-        if not self.app.triggers.mark_fired(item.id, key or new_id()):
-            return None
+        occurrence = key or new_id()
         thread = item.thread if item.thread in self.threads else MAIN_THREAD
         now = datetime.now().astimezone().strftime("%A, %Y-%m-%d %H:%M")
         prefix = {
@@ -1761,15 +1917,19 @@ class MuseService:
             # the mail or the event is the user's private data: from here on, sending
             # anything to a host that is not allowlisted is an approval
             self.app.sentinel.taint(thread)
-        self.send(
-            thread,
-            prompts.TRIGGER_PROMPT.format(
+        delivery = self._claim_delivery(
+            f"trigger:{item.id}:{occurrence}",
+            kind="trigger",
+            source_id=item.id,
+            occurrence=occurrence,
+            thread=thread,
+            text=prompts.TRIGGER_PROMPT.format(
                 now=now, what=what, context=block, text=item.text, quiet=prompts.QUIET_MARKER
             ),
-            source="trigger",
             label=prefix + _short(title or item.match or what),
         )
-        self.bus.publish({"kind": "triggers"})
+        if delivery is None:
+            return None
         return self.app.triggers.get(item.id) or item
 
     def device_came_online(self, device: dict[str, Any]) -> list[Trigger]:
@@ -1805,10 +1965,19 @@ class MuseService:
             raise KeyError(trigger_id)
         if item.status != "active":
             raise ValueError(f"trigger is {item.status}")
+        gap = self.settings.triggers.hook_min_seconds
         if item.last_fired_at:
             since = datetime.now(UTC) - datetime.fromisoformat(item.last_fired_at)
-            if since.total_seconds() < self.settings.triggers.hook_min_seconds:
+            if since.total_seconds() < gap:
                 raise RuntimeError("too soon after the last delivery")
+        # `last_fired_at` moves when the run completes; deliveries that arrive while the
+        # first still runs are measured against the last one accepted, so a burst of
+        # requests starts one run, not one per request (this method runs on the loop
+        # thread, so the check and the mark below are one step)
+        accepted = self._hook_accepted.get(item.id)
+        if accepted is not None and time.monotonic() - accepted < gap:
+            raise RuntimeError("too soon after the last delivery")
+        self._hook_accepted[item.id] = time.monotonic()
         body = body.strip()
         if content_type.startswith("application/json") and body:
             try:
@@ -1823,11 +1992,24 @@ class MuseService:
         return fired or item
 
     def _mail_mark(self) -> str:
-        """The meta key of the inbox high-water mark — one per mailbox, so a changed
-        account starts fresh instead of replaying by UID."""
+        """The meta key of the inbox high-water mark: one per mailbox, so a changed account
+        starts fresh instead of replaying by UID. The mailbox is named by a hash of the host
+        and the address: the address lives in the vault, and a key in the triggers database
+        is not where it gets written out in clear. A mark written by an earlier version
+        under the address itself is moved to the hashed key on the way."""
         email = self.settings.connectors.email
         account = self.app.vault.resolve(email.address, strict=False) or email.address
-        return f"mail_uid:{email.imap_host}:{account}"
+        digest = hashlib.sha256(f"{email.imap_host}\n{account}".encode()).hexdigest()[:24]
+        mark = f"mail_uid:{email.imap_host}:{digest}"
+        legacy = f"mail_uid:{email.imap_host}:{account}"
+        if legacy != mark:
+            store = self.app.triggers
+            old = store.get_meta(legacy, "")
+            if old:
+                if not store.get_meta(mark, ""):
+                    store.set_meta(mark, old)
+                store.delete_meta(legacy)
+        return mark
 
     async def _poll_mail(self) -> None:
         """Look at the inbox for the mail triggers, every ``mail_poll_minutes`` while at
@@ -1856,7 +2038,9 @@ class MuseService:
             return
         self.mail_watch_error = ""
         self.mail_checked_at = now_iso()
-        store.set_meta(mark, str(newest))
+        # the deliveries first, the high-water mark after: a crash between the two reads
+        # the same mails again, and a mail's key never fires twice (fire_trigger); the
+        # other order would skip a matching mail for good
         for mail in fresh:
             for trig in triggers:
                 if matches(trig.match, mail.sender, mail.subject):
@@ -1867,6 +2051,7 @@ class MuseService:
                         key=mail.key,
                         title=mail.subject or mail.sender,
                     )
+        store.set_meta(mark, str(newest))
         self.bus.publish({"kind": "triggers"})
 
     def _run_event_triggers(self) -> None:
@@ -1979,7 +2164,9 @@ class MuseService:
                     continue
                 goal = self._pick_goal_for_pass()
                 if goal is not None:
-                    self.advance_goal(goal.id)  # one goal per tick keeps the chat readable
+                    self.advance_goal(
+                        goal.id, occurrence=due.isoformat(timespec="seconds")
+                    )  # one goal per tick keeps the chat readable
             except asyncio.CancelledError:
                 return
             except Exception as exc:  # noqa: BLE001  pragma: no cover
@@ -2092,7 +2279,9 @@ class MuseService:
             raise ValueError("a tidy-up is already running")
         self._tidying = True
         try:
-            report = await tidy(store, self.app.llm, dry_run=dry_run)
+            # a routine's call, whoever asked for the pass: not a turn of a conversation
+            with llm_session.run("schedule"):
+                report = await tidy(store, self.app.llm, dry_run=dry_run)
         finally:
             self._tidying = False
         if dry_run:
@@ -2173,7 +2362,8 @@ class MuseService:
             if language in ("", "auto")
             else language,
         )
-        response = await self.app.llm.ask_complete([Message.user(prompt)], tools=None)
+        with llm_session.run("feed"):
+            response = await self.app.llm.ask_complete([Message.user(prompt)], tools=None)
         ideas = _parse_ideas(response.content or "")
         data = {
             "generated_at": now_iso(),
@@ -2361,7 +2551,8 @@ class MuseService:
                 context="\n".join(self._feed_context()),
                 language=self.feed_language(),
             )
-            response = await self.app.llm.ask_complete([Message.user(prompt)], tools=None)
+            with llm_session.run("feed"):
+                response = await self.app.llm.ask_complete([Message.user(prompt)], tools=None)
             posts = _parse_posts(response.content or "")
             now = now_iso()
             for p in posts:

@@ -61,6 +61,10 @@ export interface TaskRunnerOptions {
   /** The session a conversation lived in before (survives a restart); absent means remember in memory only. */
   recall?(key: string): string | undefined
   remember?(key: string, sessionId: string): void
+  /** A turn for another device is about to open in `sessionId` (its calls are a `hub` run, relay 0.31). */
+  began?(sessionId: string): void
+  /** The other device answered (or did not answer) an approval of its run. */
+  approvalSettled?(sessionId: string, toolName: string, callId: string, status: 'approved' | 'denied' | 'expired' | 'cancelled', waitedMs: number): void
   /**
    * Whether this computer is handing over (a protected exit, later a restart-update):
    * while it says true, a task is refused with the usual `busy` error: the asker sees
@@ -86,6 +90,20 @@ export function textOf(content: readonly ContentBlock[] | undefined): string {
 
 /** `name: the arguments on one line`, bounded, for the asker's step list and approval card. */
 export function preview(name: string, args: string): string {
+  const shown = mainArgument(args)
+  return shown ? `${name}: ${shown.length > 160 ? `${shown.slice(0, 159)}…` : shown}` : name
+}
+
+/**
+ * What a remembered answer on the asking device covers: the tool and its whole main
+ * argument, never the cut preview, whose first words two different commands can share.
+ */
+export function grantKey(name: string, args: string): string {
+  const shown = mainArgument(args)
+  return shown ? `${name}: ${shown}` : name
+}
+
+function mainArgument(args: string): string {
   let shown = args.trim()
   try {
     const parsed: unknown = JSON.parse(args)
@@ -98,9 +116,7 @@ export function preview(name: string, args: string): string {
   } catch {
     // not JSON (a model mid-call) — show it raw
   }
-  shown = shown.replace(/\s+/g, ' ').trim()
-  if (shown.length > 160) shown = `${shown.slice(0, 159)}…`
-  return shown ? `${name}: ${shown}` : name
+  return shown.replace(/\s+/g, ' ').trim()
 }
 
 export class TaskRunner {
@@ -108,7 +124,7 @@ export class TaskRunner {
   private readonly byCall = new Map<string, Run>()
   /** `<device id>\n<conversation>` → the session that conversation lives in. */
   private readonly conversations = new Map<string, SessionId>()
-  private readonly pendingApprovals = new Map<string, (status: ApprovalStatus) => void>()
+  private readonly pendingApprovals = new Map<string, { fromId: string; decide(status: ApprovalStatus): void }>()
   private approvalSeq = 0
 
   constructor(
@@ -168,6 +184,7 @@ export class TaskRunner {
     this.options.log('info', `nanomuse task: ${from.name || from.id} asked: ${text.replace(/\s+/g, ' ').slice(0, 80)}`)
     this.options.notice?.(from.name || from.id, text.replace(/\s+/g, ' ').slice(0, 120))
     try {
+      this.options.began?.(String(sessionId))
       agent.followup(createUserMessage({ content: [{ type: 'text', text: frame(from.name || from.id, this.options.deviceName(), text) }], source: { kind: 'user' } }))
       const final = await settled
       return { text: final, conversation, thread: sessionId, device: this.options.deviceName() }
@@ -176,25 +193,41 @@ export class TaskRunner {
       cutStream(run)
       this.bySession.delete(sessionId)
       this.byCall.delete(call.id)
-      for (const id of run.approvals) this.pendingApprovals.get(id)?.('cancelled')
+      for (const id of run.approvals) this.pendingApprovals.get(id)?.decide('cancelled')
     }
   }
 
   /** `stop {call}` → `{stopped}`: the run opened for that call ends; `conversation` picks by place instead. */
   async stop(args: Record<string, unknown>, call: IncomingCall): Promise<Record<string, unknown>> {
-    const byCall = this.byCall.get(String(args.call ?? ''))
-    const sessionId = this.conversations.get(key(call.from.id, String(args.conversation ?? '').trim() || call.from.id))
-    const run = byCall ?? (sessionId ? this.bySession.get(sessionId) : undefined)
+    const rawCall = String(args.call ?? '').trim()
+    const byCall = rawCall ? this.byCall.get(rawCall) : undefined
+    if (byCall && byCall.call.from.id !== call.from.id) {
+      this.options.log('warn', `nanomuse task: ${call.from.name || call.from.id} tried to stop ${byCall.call.from.id}'s run ${rawCall}`)
+    }
+    let run = byCall && byCall.call.from.id === call.from.id ? byCall : undefined
+    if (!run && (args.conversation !== undefined || !rawCall)) {
+      const conv = String(args.conversation ?? '').trim() || call.from.id
+      const sessionId = this.conversations.get(key(call.from.id, conv))
+      const sessionRun = sessionId ? this.bySession.get(sessionId) : undefined
+      if (sessionRun && sessionRun.call.from.id === call.from.id) {
+        run = sessionRun
+      }
+    }
     if (!run) return { stopped: false }
     run.agent.cancel({ kind: 'user' })
     return { stopped: true }
   }
 
   /** `approve {approval_id, allow}` → `{ok}`: the asker's answer to a card relayed from a run here. */
-  async approve(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const decide = this.pendingApprovals.get(String(args.approval_id ?? ''))
-    if (!decide) return { ok: false }
-    decide(args.allow === true || args.allow === 'true' ? 'approved' : 'denied')
+  async approve(args: Record<string, unknown>, call?: IncomingCall): Promise<Record<string, unknown>> {
+    const id = String(args.approval_id ?? '')
+    const pending = this.pendingApprovals.get(id)
+    if (!pending) return { ok: false }
+    if (call && call.from.id !== pending.fromId) {
+      this.options.log('warn', `nanomuse task: ${call.from.name || call.from.id} tried to approve ${pending.fromId}'s card ${id}`)
+      return { ok: false }
+    }
+    pending.decide(args.allow === true || args.allow === 'true' ? 'approved' : 'denied')
     return { ok: true }
   }
 
@@ -293,12 +326,14 @@ export class TaskRunner {
       stage: 'approval',
       approval_id: id,
       preview: tool ? preview(tool.name, tool.args) : req.toolName,
+      grant_key: tool ? grantKey(tool.name, tool.args) : req.toolName,
       risk: 'moderate',
       reason: req.displayReason?.en ?? req.reason ?? '',
       device: this.options.deviceName(),
       timeout: APPROVAL_TIMEOUT_S,
     })
     run.approvals.add(id)
+    const askedAt = Date.now()
     const status = await new Promise<ApprovalStatus>((resolve) => {
       const done = (s: ApprovalStatus) => {
         clearTimeout(timer)
@@ -310,9 +345,10 @@ export class TaskRunner {
       const onAbort = () => done('cancelled')
       const timer = setTimeout(() => done('expired'), APPROVAL_TIMEOUT_S * 1000)
       req.signal?.addEventListener('abort', onAbort, { once: true })
-      this.pendingApprovals.set(id, done)
+      this.pendingApprovals.set(id, { fromId: run.call.from.id, decide: done })
     })
     if (status !== 'cancelled') run.call.event({ stage: 'approval_result', approval_id: id, status })
+    this.options.approvalSettled?.(String(run.sessionId), req.toolName, String(req.callId ?? ''), status, Date.now() - askedAt)
     this.options.log('info', `nanomuse task: ${run.call.from.name || run.call.from.id} ${status} ${req.toolName}`)
     return status === 'approved' ? 'allowed-once' : status === 'cancelled' ? 'cancelled' : 'rejected'
   }

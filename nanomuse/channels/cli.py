@@ -51,7 +51,7 @@ def _settings(config: Path | None) -> Settings:
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         console.print(
             f"[red]config.toml is not valid TOML[/red] ({find_config_file(config)}): {exc}"
         )
@@ -91,7 +91,14 @@ class _Server:
 
         try:
             response = httpx.request(
-                method, self.base + path, json=body, headers=self.headers, timeout=15
+                method,
+                self.base + path,
+                json=body,
+                headers=self.headers,
+                timeout=15,
+                # this is this machine's own server: the environment's proxy has no part in it,
+                # and the token in the headers would be the first thing it read
+                trust_env=False,
             )
         except httpx.ConnectError:
             return None

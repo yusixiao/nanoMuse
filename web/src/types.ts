@@ -54,6 +54,8 @@ export interface AssistantEvent extends BaseEvent {
   /** a synced reply written on another device of the account */
   via_device?: string;
   via_device_name?: string;
+  /** the person's thumb on this reply (`POST /api/threads/{id}/feedback`), "" or absent when none */
+  feedback?: "up" | "down" | "";
 }
 
 export interface ToolEvent extends BaseEvent {
@@ -324,6 +326,10 @@ export interface WorkingPresence {
   cid: string;
   device: string;
   device_name: string;
+  /** what the run is doing right now (0.31): working, or waiting on the person */
+  state?: "working" | "waiting";
+  /** the step's own words ("打开携程网站"), as the run reported it last */
+  detail?: string;
   at: number;
 }
 
@@ -409,6 +415,8 @@ export interface CloudConfig {
   privacy_url?: string;
   repo_url?: string;
   improve_default?: boolean;
+  /** Relay policy; absent on older relays, whose minimum was eight. */
+  password_min_len?: number;
 }
 
 /** `/api/cloud/me`: the account as the relay sees it. */
@@ -1052,7 +1060,14 @@ export interface ConnectionsData {
     status: string;
   };
   search: {
-    provider: "duckduckgo" | "brave" | "tavily" | "serply" | "you" | "searxng";
+    provider:
+      | "duckduckgo"
+      | "brave"
+      | "tavily"
+      | "serply"
+      | "you"
+      | "parallel"
+      | "searxng";
     /** SearXNG instance */
     base_url: string;
     key_source: "none" | "vault" | "config" | "missing";
@@ -1063,7 +1078,7 @@ export interface ConnectionsData {
       id: string;
       label: string;
       needs_key: boolean;
-      /** works without a key; one raises the limit (You.com) */
+      /** works without a key; one raises the limit (You.com, Parallel) */
       optional_key?: boolean;
       keys_url: string;
     }>;
@@ -1437,6 +1452,7 @@ export type WsMessage =
   | { kind: "update"; event: TimelineEvent }
   | { kind: "stream_start"; thread: string; id: string; ts: string }
   | { kind: "delta"; thread: string; id: string; text: string }
+  | { kind: "reasoning_delta"; thread: string; id: string; text: string }
   | { kind: "stream_end"; thread: string; id: string; discard?: boolean }
   | { kind: "status"; status: Status }
   | { kind: "thread"; thread: ThreadMeta }

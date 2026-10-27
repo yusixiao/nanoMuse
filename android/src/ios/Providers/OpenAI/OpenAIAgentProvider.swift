@@ -165,8 +165,8 @@ final class OpenAIAgentProvider: AgentProvider {
             Self.injectThinkingParams(into: &body, model: model, level: thinkingLevel, isOpenRouter: provider.useOpenRouterCompat, maxTokens: maxTokens, offEffort: offEffort, unifiedReasoningEffort: provider.usesUnifiedReasoningEffort, isMistral: provider.isMistral, isXAI: provider.isXAI, isDashScope: provider.isDashScope, providerInstanceId: provider.providerInstanceId)
         }
 
-        // nanoMuse: OpenCode Go wants one stable id per conversation (NanoMuseOpenCodeSession)
-        let opencodeSession = NanoMuseOpenCodeSession.wants(provider.customBaseURL) ? Self.derivePromptCacheKey(from: messages) : nil
+        // nanoMuse: OpenCode Go wants one stable id per conversation (NanoMuseOpenCodeSession); so does the account's relay (NanoMuseCloudHeaders)
+        let opencodeSession = NanoMuseOpenCodeSession.wants(provider.customBaseURL) || NanoMuseCloudHeaders.isCloud(provider.extraHeaders) ? Self.derivePromptCacheKey(from: messages) : nil
         let (lineStream, _) = try await provider.streamRaw(body: body, isResponsesAPI: false, opencodeSession: opencodeSession)
 
         return AsyncThrowingStream { continuation in
@@ -250,6 +250,7 @@ final class OpenAIAgentProvider: AgentProvider {
                             logger.error("SSE stream error: \(message)")
                             throw LLMError.providerError(message: "[\(code ?? -1)] \(message)")
                         }
+                        if let status = event["nanomuse"] as? [String: Any] { NanoMuseStreamStatus.note(status) } // nanoMuse: the relay's "queued, N ahead" before the model speaks (docs/cloud.md)
 
                         // Usage
                         if let usage = event["usage"] as? [String: Any] {
@@ -543,8 +544,8 @@ final class OpenAIAgentProvider: AgentProvider {
             body["service_tier"] = "priority"
         }
 
-        // nanoMuse: OpenCode Go wants one stable id per conversation (NanoMuseOpenCodeSession)
-        let opencodeSession = NanoMuseOpenCodeSession.wants(provider.customBaseURL) ? Self.derivePromptCacheKey(from: messages) : nil
+        // nanoMuse: OpenCode Go wants one stable id per conversation (NanoMuseOpenCodeSession); so does the account's relay (NanoMuseCloudHeaders)
+        let opencodeSession = NanoMuseOpenCodeSession.wants(provider.customBaseURL) || NanoMuseCloudHeaders.isCloud(provider.extraHeaders) ? Self.derivePromptCacheKey(from: messages) : nil
         let (lineStream, _) = try await provider.streamRaw(body: body, isResponsesAPI: true, opencodeSession: opencodeSession)
 
         return AsyncThrowingStream { continuation in

@@ -36,7 +36,7 @@ and your devices. After the code the app has:
 
 *Settings → nanoMuse Cloud* (the *Account* screen) shows who is signed in (a
 masked hint, never the number) and since when; sets, changes or removes the
-**password** (eight characters or more; scrypt on the relay; locked for a while
+**password** (the relay sets the minimum, eight characters by default; scrypt on the relay; locked for a while
 after repeated wrong attempts, and a fresh code sign-in opens it again); today's
 spend against the allowance in ¥ and $ with a meter; **usage by kind** (chat,
 pictures, video) today and in all, and **by model**; the
@@ -84,17 +84,42 @@ The relay is the code in [`cloud/`](../cloud/README.md). It stores:
   so the operator can see who an account belongs to on the admin page (the
   database file alone shows nothing);
 - the hash of each key issued, with the device name you signed in from, how
-  (code or password) and when it was last used; revoked keys keep their row
-  so the sign-ins list can say so;
+  (code or password), when it was last used and, once registered, its Hub
+  device id and kind; revoked keys keep their row so the sign-ins list can say
+  so;
 - the password, if you set one, as an scrypt hash, never the password;
 - per request: the kind (chat, picture, video), the model, the token counts
   and the amount charged;
+- since relay 0.28, per chat request, how it went (the `calls` table): how
+  long it waited for a slot at the provider, the time to the first token and
+  the whole, how it ended (ok, a provider error or timeout, a content-check
+  refusal, a broken connection, an allowance refusal), how many messages and
+  pictures the request carried, which tools the client offered and which the
+  reply called (names only), whether it was a screen-operation turn, the
+  client platform and, from relay 0.31, how many of the prompt tokens the
+  provider served from its cache. Never a word of the conversation. Rows older than
+  `CALLS_KEEP_DAYS` (90) are removed, and the operator's *Live* and *Usage*
+  pages read these rows in aggregate (how busy the model endpoint is, how
+  fast it answers, which platforms queue);
+- since relay 0.28, beside each kept turn (*Help improve*, below) a shape row
+  (`sample_stats`): message count, character counts, tool calls, pictures,
+  whether the prompt was trivially short, and a hash of the person's message
+  so repeats can be counted. The quality page reads the shapes, not the turns;
+  deleting the turns deletes the shapes;
+- since relay 0.28, a device may say in its hub hello which model it runs on
+  (`llm {provider, model}`, the two ids and nothing else: never a key, an
+  address or a setting), so the operator can see which providers people
+  configure for themselves. The apps of 1.0.6 and earlier say nothing; from
+  1.0.7 every client says `cloud` while the account's models answer and the
+  catalogue's vendor id (`openrouter`, `bailian`) with the model id on a key
+  of its own;
 - a timeline of account events (signed in, failed sign-in, password set or
   changed, signed out, refused for budget, upstream error) with a
   device name, a model or an error code as the detail, never message content;
-- the id of each video task with its price and the provider's last word on it,
-  so only the account that started one can poll it and the clip is charged once
-  (the rows go after three days);
+- legacy video-task rows with their price and the provider's last word, retained
+  only for accounting cleanup and removed after three days. Hosted media is
+  fully retired, so task polling returns `410 hosted_media_retired` like every
+  other hosted media route and never reaches the provider;
 - the agent's name and look (`/v1/me/profile`): which face it wears (the dragon,
   an emoji on a colour, or one drawn in the avatar studio, with that face's five
   stills as small WebP pictures), so every device of the account shows the same
@@ -119,10 +144,40 @@ The relay is the code in [`cloud/`](../cloud/README.md). It stores:
   off deletes all of it; so does deleting the account. The section
   [Conversation sync](#conversation-sync) below has the shape.
 
-Images and tool results are never stored, and message content only as the
-*Data controls* and *Conversation sync* sections below say; with both switches off, nothing: the request
-is forwarded to the operator-configured upstream model and the reply is streamed
-back. The relay admits at most `CHAT_CONCURRENCY` chat requests to that shared
+- since relay 0.29, **the record**: every chat turn the relay answered, in
+  full: the request as the relay sent it to the model (every message: the
+  system prompt with your memory, SOUL and instructions, what you wrote, what
+  tools returned; the tool definitions; the sampling fields) and the answer as
+  the model gave it (content, reasoning, tool calls, finish reason, usage).
+  Pictures, audio and clips are taken out and kept once each as files named by
+  their SHA-256, a `blob:sha256:` reference standing where each was; a
+  screenshot the app resends with every turn of a screen operation is one
+  file. With the turn: the model, the platform, the device and conversation
+  the app named (`X-NanoMuse-Device`, `X-NanoMuse-Conversation`, 1.0.7 on),
+  the token counts (from relay 0.31 with the cached part of the prompt), and
+  the address and client software like every request. From relay 0.31 also
+  where the turn came from as the app says it: who started it (a person, a
+  scheduled task, the feed's routine, a goal's check, another device), its
+  turn and step in the conversation, the screen-operation task and step it
+  belongs to, and the script of what the person wrote (one word: `zh`,
+  `latin`, `ja`, …; never the text itself). The section
+  [Provenance](#provenance) has the headers.
+  It is the account's own data, so its devices can read it back and the
+  operator can see a problem whole; it does not depend on either switch
+  below. The section [The record](#the-record) says what is kept, who reads
+  it and how it goes.
+
+- since relay 0.31, **what the apps report around a turn**: short records of
+  codes and numbers, never a message — what the Sentinel decided about a tool
+  call and at which risk, how an approval went, why a reply was stopped by
+  hand, a thumb up or down on an answer, how a screen-operation step went.
+  Each is tied to the turn's id when the app knows it; the section [Client
+  events](#client-events) lists them. They go with the kept turns when the
+  person deletes them, and with the account.
+
+Message content is kept as *The record*, *Data controls* and *Conversation
+sync* below say, and not otherwise: the request is forwarded to the
+operator-configured upstream model and the reply is streamed back. The relay admits at most `CHAT_CONCURRENCY` chat requests to that shared
 deployment at once and retries a 429 or 5xx only before output starts; the
 remaining requests wait without duplicating a turn. Every response carries an
 `X-Nanomuse-Request` id so a problem report
@@ -145,18 +200,32 @@ and language from the request headers, tied to the account id only, never the
 system prompt (your memory, SOUL and instructions), never what a tool returned
 (your files, your screen, what another app showed), never a picture, a clip or
 a voice note (a marker stands where one was). The point is a training set for
-the community's own open model. The page shows how many turns are kept; turn
+the community's own open model. From relay 0.31 a turn the app ran on a key
+of your own and sent up to the record (`POST /v1/turns`) is kept in the same
+training view when the switch is on — a turn is a turn whichever key answered
+it — and each kept turn says where it came from (`meta.source` `cloud` or
+`own`, `meta.run`, `meta.turn`, `meta.turn_id` naming the record's turn, the
+script of what you wrote; see [Provenance](#provenance)), so the app's later
+word on it (a thumb, why it was stopped) can be joined by the turn's id. The page shows how many turns are kept; turn
 the switch off at any time (nothing more is kept) and delete what was kept
 with one tap; deleting the account deletes it too. Nothing is credited for
 the switch either way. On `cloud.nanomuse.cn` the switch is **on for accounts
 created from relay 0.9 on, until the person turns it off**: the privacy
 policy says so, the page says so next to the switch, and accounts from before
 keep the choice they had made; a self-hosted relay sets its own default with
-`IMPROVE_DEFAULT`. The operator sees the kept turns on the admin page's *Data
+`IMPROVE_DEFAULT`. Since relay 0.29 the switch decides only whether the
+training view of a turn joins the training set; the turn itself is in [the
+record](#the-record) either way, and the same delete tap removes both
+(`DELETE /v1/me/samples` answers `{deleted, turns, files}`). The operator sees the kept turns on the admin page's *Data
 controls* panel (how many accounts have it on, turns by day, model and app,
 the newest turns, every account's kept conversations in full) and exports them
 as JSON lines without account ids or addresses (`GET /v1/admin/samples/export`,
-`?account_id=` for one account's). The relay does not receive a location (the
+`?account_id=` for one account's). From relay 0.31 each exported line carries
+`subject`, a pseudonym for the account (an HMAC of the account id under the
+relay's secret, 16 hex characters: the same account is the same subject in
+every export, and nothing recovers the account from it without the secret),
+and the [deletions ledger](#deletions) names the subjects whose data was
+deleted since, so a set built from an earlier export can drop them. The relay does not receive a location (the
 apps never send one), but from relay 0.10 it records the network address and
 the client software (`User-Agent`: the Android app and its version, the
 runtime on Windows / macOS / Linux, a browser) with each sign-in, request,
@@ -166,6 +235,179 @@ they are deleted with the account. From relay 0.11 the admin page also says
 where an address is (country, province, city), looked up in an offline copy
 of ip2region's database on the relay's own disk; no third party is asked, and
 nothing more is stored (the place is computed when the page is drawn).
+
+## The record
+
+Since relay 0.29 the relay keeps every chat turn it answered, in full, as the
+account's own data, so that a person's devices show the same history with the
+screenshots in it, and the operator can see a problem whole instead of
+guessing from counts. A turn is:
+
+- the request as the relay sent it to the model: every message (the system
+  prompt with your memory, SOUL and instructions; what you wrote; what tools
+  returned), the tool definitions, the sampling fields and the relay's
+  defaults, with the model named as the app knows it and the relay's own
+  `user` and `stream_options` left out;
+- the answer as the model gave it: the assistant's message whole (content,
+  reasoning, tool calls, finish reason), assembled from the stream when it
+  streamed, with the usage; a stream that broke off is kept with what arrived
+  and `status: partial`, and `meta.ended` says why (relay 0.30):
+  `client_gone` is the app closing the stream (the person stopped it, or the
+  app gave up waiting), `upstream_timeout` and `broken` are the provider's
+  end;
+- the pictures, audio and clips, taken out of the messages and written once
+  each to a file named by its SHA-256 (`MEDIA_DIR`, next to the database);
+  `blob:sha256:<hex>` stands where each was and the turn's `meta.media` lists
+  them with type and size. A screenshot that an app resends with every turn
+  of a screen operation is one file however many turns name it;
+- the model, the platform, the device and conversation the app named
+  (`X-NanoMuse-Device`, `X-NanoMuse-Conversation` on the chat request, 1.0.7
+  on), the token counts, the client software and language, and the address
+  the request came from (the operator's view only).
+
+It is written after the answer has left, off the request's path, and is never
+the reason a chat fails. It does not depend on *Help improve* (that switch is
+about the training set) or on *Sync conversations* (that is the apps' own
+copy of a chat); `RECORD_TURNS=0` on a relay you run keeps none of it.
+
+**Who reads it.** The account's devices: `GET /v1/turns` (newest first; paged
+with `before` and `before_id`; `conversation=` for one chat), `GET
+/v1/turns/{id}`, and the files at `GET /v1/blobs/{sha256}`; a file opens
+only for an account that holds a reference to it (one of its turns, its
+profile's clips, an upload of its own); knowing a hash opens nothing. The
+person's view leaves the address out. The operator: `GET /v1/admin/turns`,
+the export as JSON lines (`/v1/admin/turns/export`, account ids included:
+this is the account's data, not the training set, which stays
+`/v1/admin/samples/export` without them), one file at
+`/v1/admin/blobs/{sha256}`, and `GET /v1/admin/record` for the figures:
+turns and files in all and per day, the store against its cap.
+
+History and sample pages use the existing timestamp indexes to skip newer seconds before applying the insertion-order tie-break. Exports and the analytics backfill use the same paging boundary; no database migration is needed.
+
+**Turns on your own key.** From 1.0.7 an app that ran a turn on a key of its
+own sends it up afterwards, so the record is whole wherever the model was:
+`PUT /v1/blobs/{sha256}` for each picture (raw body with its `Content-Type`;
+the hash is checked; `HEAD` first, or `known: true` in the answer, says
+another device already sent it), then `POST /v1/turns` with `model`,
+`messages` (references, or data URLs inline), `response: {message, usage?}`,
+and `provider`, `ts`, `conversation`, `id` and `status` as the app has
+them (with `status: partial`, `ended` in the app's word: `aborted`, `error`,
+`abandoned`), and from relay 0.31 `run`, `turn`, `step`, `trajectory`,
+`trajectory_step` and `platform` as [Provenance](#provenance) defines them;
+the row says `source: own`. With *Help improve* on, the turn's training view
+is kept too, as for a turn the relay answered. The Python runtime does this
+for every model call that does not go to the relay — a configured provider,
+the ChatGPT sign-in, the hands' own model — while an account is signed in on
+the computer: the call is sent up afterwards from a queue in memory, with
+the request as it went (less the key), the reply, the usage and the
+provenance; pictures past two megabytes go as files first. Signing out
+drops the queue; nothing is sent without an account. A reference to a file the account
+never put up is a 400 `unknown_blob`. One account sends at most
+`RECORD_UPLOADS_PER_MINUTE` turns and files a minute (120; a 429
+`rate_limited` says to send the rest later) and holds at most
+`MEDIA_ACCOUNT_MAX_MB` of files (2048; a 413 `quota_exceeded`); past
+`MEDIA_MAX_GB` in all, nothing is taken from anyone until the hourly trim
+has run (507 `store_full`). Both are written off the request's loop.
+
+**The face's clips.** The same files carry the drawn face's clips between
+devices: the device that animated it puts the clips up and names them in the
+profile (`clips: {mood: {sha256, mime, bytes}}` on `PUT /v1/me/profile`),
+the others download them instead of rendering their own. The clips go with
+the face: `clips: null`, another avatar or `DELETE /v1/me/profile` clears
+them.
+
+**How it goes.** *Settings → Data controls*' delete removes the record with
+the training turns: every turn of the account and every file only it
+referenced; deleting the account does the same; `RECORD_KEEP_DAYS` (0 on
+`cloud.nanomuse.cn`: kept until you delete it) sweeps older turns once an
+hour. The files are bounded by `MEDIA_MAX_GB`: past it the least recently
+used go first, the turns stay and show a reference to nothing where those
+pictures were; a clip a profile wears is never trimmed. A file the disk would
+not let go of at the moment of a delete is tried again at every sweep until
+it is gone. `/v1/me.contribute.record` tells the apps what is held:
+`{on, turns, own, files, media_bytes, keep_days}`, and the answer to `POST
+/v1/me/contribute` carries the same `record`. The account page at `/app`
+shows the record (turns, own-key turns, files, how long the relay keeps
+them) above the *Help improve* switch, and offers the one delete whenever
+either holds anything.
+
+## Provenance
+
+A model call is one of many in a conversation, and the app knows things about
+it that the request body does not say. From relay 0.31 the apps say them in a
+few headers on the chat request, and in fields of the same names on a turn
+they send up from a key of their own (`POST /v1/turns`; the headers fill in
+what the body leaves out). Each is optional; an app from before sends none,
+and the relay stores *not said*, never a guess.
+
+| header | body field | what it says |
+| --- | --- | --- |
+| `X-NanoMuse-Run` | `run` | who started the turn: `person` (someone typed or tapped), `schedule` (a scheduled task), `feed` (the feed's daily routine), `goal` (a goal's check or evaluation), `hub` (this device ran it for another device's request). Lower case, `[a-z][a-z0-9_]{0,23}`; a word the relay has not met is kept as said |
+| `X-NanoMuse-Turn` | `turn` | the turn's number in the conversation, from 1: the person's first message is turn 1, the reply to their second message is turn 2 |
+| `X-NanoMuse-Step` | `step` | the model call's number within the turn, from 1: a turn that calls tools makes several |
+| `X-NanoMuse-Trajectory` | `trajectory` | the id of the screen-operation task this call belongs to (`[A-Za-z0-9_.:-]{1,80}`), the same on every step of it |
+| `X-NanoMuse-Trajectory-Step` | `trajectory_step` | the step's number within the task, from 1 |
+| `X-NanoMuse-Platform` | `platform` | the app's own word on its platform when its user agent would not say (the desktop's uploads go out from Node; the runtime's calls from an SDK): one of `android`, `ios`, `desktop`, `windows`, `macos`, `linux`, `runtime`, `browser`. Anything else is ignored and the user agent decides |
+
+`X-NanoMuse-Device` and `X-NanoMuse-Conversation` (1.0.7) are unchanged and
+go with these. The relay keeps the six in the turn's row of the record
+(`run`, `turn`, `step`, `trajectory`, `trajectory_step`, read back on `GET
+/v1/turns` when said), in the kept turn's meta when the switch is on, in the
+call's telemetry row (`run`, so the Usage and Platforms pages can tell a
+person's turn from a routine's) and in the training view's shape rows. The
+record's row also carries `script`, one word for the script of the person's
+last message (`zh`, `ja`, `ko`, `ru`, `ar`, `th`, `hi`, `he`, `el`, `latin`,
+or none), computed as the turn is written and kept instead of the
+`Accept-Language` header most apps leave empty.
+
+## Client events
+
+From relay 0.31 the apps report what happened around a turn that the request
+itself does not show, as short records of codes and numbers: `POST /v1/events`
+with `{"events": [{kind, ts?, turn?, conversation?, data}]}`, at most 100 per
+request and 60 requests a minute from one account (a 429 says to send the rest
+later); the answer is `202 {kept, dropped}`. `kind` is dotted lower case;
+`turn` is the record's id for the turn (the `x-nanomuse-request` header of a
+Cloud turn; an own-key turn's `id` with `"source": "own"` beside it, which the
+relay turns into the record's `own-…` form); `data` is a flat object of at
+most 16 short codes, numbers and booleans. A value that looks like prose (over
+120 characters, or not of `[A-Za-z0-9_.:/ -]`) is left out, a nested object is
+left out, an event of the wrong shape is dropped and counted, not refused:
+this is how the relay keeps the promise that no message travels here. The
+kinds and what their `data` holds:
+
+| kind | data |
+| --- | --- |
+| `sentinel.decision` | `tool`, `risk` (`safe`, `moderate`, `sensitive`, `critical`), `decision` (`allow`, `ask`, `deny`), `grant?` (`once`, `schedule`, `conversation`, `always`: the permission that covered it), `policy?` (what the policy said before anyone was asked), `by?` (who settled it: `policy`, `auto`, `grant`, `person`, `timeout`), `channel?`, `tainted?` (bool), `warnings?` (count), `ok?` (bool: whether the tool then ran without an error; the desktop sends it, the runtime does not), `class?` (the phone's own class of the step: Android's risk gate says `safe`, `install`, `destructive`, `outbound`, `remote` or `money`; the iPhone's permission check says `privacy`, `media` or `system`, the category of the `apple-*` command) |
+| `approval.result` | `tool?`, `risk?`, `allow` (bool), `scope?` (`once`, `schedule`, `conversation`, `always`), `by?` (`person`, `timeout`, `other_device`, `auto`: the app answered no itself, as the iPhone does for a hub task while it is not on screen), `waited_s?`, `channel?`, `warnings?` |
+| `turn.stopped` | `reason`: `wrong`, `slow`, `changed_mind`, `done`, `other`, `skipped` (the person stopped a reply and said, or did not say, why), `turn_no?` |
+| `turn.feedback` | `vote` (`up`, `down`, `none` when taken back), `reason?` (`wrong`, `unhelpful`, `unsafe`, `slow`, `other`), `turn_no?` |
+| `turn.ended` | `ended`: `aborted` (the person pressed Stop), `error`, `abandoned` (a turn kept short, in the app's word; the runtime sends `aborted` for every stopped run, whichever key it ran on), `turn_no?` |
+| `hands.step` | `trajectory`, `step`, `action` (the action's kind: `tap`, `type`, `open_app`, …; `end` closes the run), `outcome?` (`ok`, `failed`, `refused`, `stopped`, `handed_over`; on `end`, the run's status: `done`, `ask`, `blocked`, `stopped`, `failed`, `max_steps`), `latency_ms?` (the model's time on the step) |
+| `app.opened`, `screen.viewed` | `screen?` (a screen's code name) |
+
+The operator reads them at `GET /v1/admin/client-events` (newest first;
+`kind=` a comma list, `account_id=`, `before=` the last id shown), exports
+them as JSON lines with the `subject` pseudonym and no account id
+(`/v1/admin/client-events/export?since=`), and sees the figures on the admin
+page's *Data controls* panel (`/v1/admin/client-events/summary?days=`: by day
+and kind, and the split of each kind's codes: what the Sentinel decided, how
+approvals went, why replies were stopped, how the thumbs fell). *Settings →
+Data controls*' delete removes them with the turns; deleting the account
+removes them too.
+
+## Deletions
+
+A training set built from an export outlives the relay's rows: when a person
+deletes their kept data (`DELETE /v1/me/samples`) or their account (`POST
+/v1/auth/delete`), the relay writes one line to a ledger — the account's
+`subject` pseudonym, the time and the scope (`samples` or `account`) — and
+nothing else about them stays. `GET /v1/admin/deletions?since=` lists the
+lines, oldest first; whoever builds a set from the exports reads it before
+each build and drops every line of those subjects. The pseudonym names nobody
+without the relay's secret, and the ledger is all that outlives the account on
+purpose. The person console's *Data controls* page says so next to the delete,
+and the privacy page repeats it.
 
 ## Conversation sync
 
@@ -236,7 +478,7 @@ GET    /v1/sync/state                   → {enabled, cursor, counts{conversatio
 PUT    /v1/sync/state   {enabled}       → the same; false deletes everything stored, the counter keeps counting
 GET    /v1/sync/changes ?since=0&limit=500&scope=all|main&tail=K   → {cursor, more, conversations[], messages[], skipped?}
 POST   /v1/sync/changes {device, conversations[], messages[]}   → {cursor, accepted, rejected[{cid | mid, reason, cid_main?}]}
-POST   /v1/sync/working {cid, working, device?}   → 204; the hub tells the other devices   404 no_conversation
+POST   /v1/sync/working {cid, working, device?, state?, detail?}   → 204; the hub tells the other devices (0.31: state and step ride along)   404 no_conversation
 DELETE /v1/sync/changes                 → the state, counts at zero     everything stored, switch unchanged
 DELETE /v1/sync/conversations/{cid}     → {cursor, deleted: true}      a tombstone the other devices apply; 404 no_conversation
 ```
@@ -257,7 +499,11 @@ row and behaves the same). Any other `scope` is 400 `bad_scope`.
 (`false`); the relay keeps the live ones in memory for ten minutes (never in
 the database, so a restart forgets them), lists them under `working` in the
 state (`[{cid, from, device_name, working, at}]`) and sends a `working` frame
-to the account's other sockets ([hub.md](hub.md#frames)). Request bodies over
+to the account's other sockets ([hub.md](hub.md#frames)). Since 0.31 a
+`working: true` may also say `state` (`working` | `waiting`) and `detail` —
+the run's current step in the model's own words, capped at 160 characters —
+and the frame and the state's `working` rows carry both, so the other devices
+see the run move between its start and its end. Request bodies over
 `MAX_REQUEST_BYTES` (16 MiB by default since 0.20) are 413 `too_large` with
 *Request body is N MB; this relay accepts up to M MB*.
 
@@ -347,9 +593,9 @@ code brought, with how many of those ever made a request, how many are still
 pending (no first request yet, so no bonus yet) and how many were seen from
 one of the inviter's own addresses, and an account's page names its inviter
 and lists the people it brought (`GET /v1/admin/invites`). Padding one's own
-pool is not worth the trouble: the bonus is paid once the invitee uses the
-relay (`INVITE_SETTLE_MIN_SPENT_UY`, 200 micro-yuan by default, or a
-registered Hub device) from a network address different from the inviter's,
+pool is not worth the trouble: the bonus is paid once the invitee has
+accumulated real successful provider spend (`INVITE_SETTLE_MIN_SPENT_UY`, 200
+micro-yuan by default) from a network address different from the inviter's,
 e-mail `+tag` subaddresses and Gmail dot or `googlemail.com` aliases map to
 the same account, disposable mail domains (`DEFAULT_SIGNUP_DOMAIN_BLOCK` plus
 `SIGNUP_DOMAIN_BLOCK`) are refused, new accounts from a mail domain that is
@@ -398,9 +644,9 @@ card changes; its title and buttons stay the app's. Apps built against relay
 The operator can pause parts of the relay without a restart or a deploy
 (relay 0.22, *Controls* on the admin console; `nanomuse-cloud admin controls
 …` on the command line; see [`cloud/README.md`](../cloud/README.md#controls-022)).
-Five switches, each on by default, each kept in the database so a restart
+Six switches, each on by default, each kept in the database so a restart
 keeps it, each with a line in an audit log saying who flipped it, when and
-why. What an app sees when one is off:
+why. What an app sees when one of the five pauses is off:
 
 | switch | what the app gets while it is off |
 |---|---|
@@ -416,6 +662,22 @@ before it tries. The apps handle the codes as any refusal: the phones and the
 console show the relay's sentence; the `allowance_exhausted` shape is the one
 they already draw a card for.
 
+The sixth switch, **nanoMuse clients only** (relay 0.28, on by default), works
+the other way round: while it is on, the models answer the nanoMuse apps, the
+desktop app, the Python runtime and the web console in a browser, and any
+other software calling `/v1/chat/completions` with a nanoMuse key (a pool
+worker, an SDK, a script, the unbranded upstream app) gets **403
+`client_not_supported`** with the client's name under `client` and a sentence
+saying to use a key of its own there. The relay reads the `User-Agent` for
+this, so it stops honest programs, not impostors. Members are answered from
+anything; sign-in, the account page, sync and the hub are not affected; a
+refusal costs nothing and is a `client.refused` line on the account's
+timeline. The apps never see this code: every one of them names itself, and
+the runtime of 1.0.6 and earlier, whose model calls carried the OpenAI SDK's
+own string, is recognised by that string (the runtime names itself from
+1.0.7). Off, the relay answers any client with a valid key, as it did before
+0.28.
+
 **Thresholds.** A rule says *when the account count reaches N, do one
 thing*: close sign-ups, pause the allowance, pause sync, or only notify. Rules
 are checked when an account is created and once a minute; a rule fires once
@@ -427,6 +689,8 @@ nothing about any person). The state of the switches and the next threshold
 are the first line of the admin dashboard.
 
 ## Running your own
+
+API and error counters are written through the relay's worker pool. The response awaits these writes, while the event loop remains available if a counter write waits for a database lock.
 
 Anyone can run a relay (for a family, a class, a company) and point the app
 at it. The server is a single Python process over SQLite; a VPS with Docker and
@@ -475,8 +739,8 @@ The app's calls, all JSON:
 GET  /healthz                                                 → {ok, version, models[], paused[]}; no key
 GET  /v1/config                                               → {version, signup_open, paused[], allowance_cny, allowance_usd, invite_bonus_cny, invitee_bonus_cny, usd_cny, invite_url, own_key_docs, openrouter_url, privacy_url, repo_url, improve_default, code_ttl_s, password_min_len}; no key, a minute's cache
 POST /v1/auth/code          {identifier}                      → 204 (a disabled account gets the same 204 and nothing is sent); 400 phone_region, 403 not_invited | signup_closed, 429 code_too_often | domain_limited, 502 send_failed
-POST /v1/auth/verify        {identifier, code, device, invite?} → {api_key, base_url, account, tokens, models, created, region}; 400 code_wrong | code_expired, 403 account_disabled
-POST /v1/auth/login         {identifier, password, device}    → the same; 401 bad_credentials, 429 locked, 400 no_password
+POST /v1/auth/verify        {identifier, code, device, invite?, device_id?, device_kind?} → {api_key, base_url, account, tokens, models, created, region}; the optional identity binds the key to that Hub device (hub.md); 400 code_wrong | code_expired | bad_device, 403 account_disabled
+POST /v1/auth/login         {identifier, password, device, device_id?, device_kind?} → the same; 401 bad_credentials, 429 locked, 400 bad_device
 POST /v1/auth/password      Bearer  {password, current?}      → 204; "" with current removes it; 400 password_short | password_long | password_weak | password_wrong | password_required
 POST /v1/auth/session-key   Bearer  {device?, ttl_s?}         → {api_key, expires_at}; a key that lapses on its own (90 days at most); 403 session_from_session
 GET  /v1/me                 Bearer                            → {region: cn | intl | unknown, account{…, has_password, sessions, signed_in_via}, usage{today, total by kind / model}, tokens, spend{…, ways, guidance}, invite, contribute, models, defaults, base_url, clips, recent, nudges, paused[]}
@@ -514,15 +778,27 @@ clips under the provider's own paths (`POST
 /api/v1/tasks/{id}` for the account's own tasks, `GET /api/v1/uploads`). Errors
 are `{"error": {"message", "type": "nanomuse_cloud", "code"}}` with a stable
 `code` the app turns into a sentence. On the hosted service, new image/video
-requests, uploads, typed media-model lookups and media estimates return `410
-hosted_media_retired` with `action: configure_own_provider` before any
-upstream request. Existing video-task polling remains available so an old
-accepted task can finish. Relay 0.22 adds the codes of the
+requests, uploads, typed media-model lookups, media estimates and video-task
+polling return `410 hosted_media_retired` with
+`action: configure_own_provider` before any upstream request. Relay 0.22 adds the codes of the
 operator's [switches](#controls): `403 signup_closed`, `503 service_paused`,
 `503 sync_paused`, `503 hub_paused` (and the hub's close code `4003
 hub_paused`), and `allowance_exhausted` with `paused: true` when the free
 allowance is paused rather than spent; `/healthz`, `/v1/config` and `/v1/me`
 list the switches that are off under `paused`.
+
+**Before the model says anything (relay 0.31).** A streamed chat turn may begin with
+chunks that have no `choices`: `{"object": "chat.completion.chunk", "model", "created",
+"choices": [], "nanomuse": {"phase", "waited_ms", "ahead"?}}`. While the request waits for
+one of the relay's provider slots (`CHAT_CONCURRENCY`), one comes every five seconds with
+`phase: "queued"` and `ahead`, how many requests are in front of it; when its slot comes,
+one with `phase: "working"`; a request that never waited gets none. While the provider
+takes its time over the first bytes, a comment line (`: keepalive`) goes out every ten
+seconds. An SSE parser skips comment lines by definition, and a chunk without choices is
+the shape of the usage-only chunk every client already handles, so a client that knows
+nothing of either sees the reply it always saw; the apps read the field and say how many
+are ahead and how long the turn has waited. Nothing of this is in a non-streamed turn,
+and nothing of it is charged or recorded.
 
 A key the relay does not know answers
 `401 bad_key`; from 0.1.40, a key whose account was deleted answers

@@ -3,11 +3,10 @@ package io.github.nanomuse.feed
 import android.content.Context
 import com.openminis.app.R
 import com.openminis.app.logging.AppLogger
+import io.github.nanomuse.sandbox.FeedSandboxScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 /**
@@ -24,7 +23,7 @@ object FeedStore {
     private lateinit var appContext: Context
 
     private val _posts = MutableStateFlow<List<FeedPost>>(emptyList())
-    /** Newest day first, then by index. */
+    /** Newest day first; inside a day the newest batch first, each batch in the model's order. */
     val posts: StateFlow<List<FeedPost>> = _posts
 
     private val _preferences = MutableStateFlow("")
@@ -36,14 +35,14 @@ object FeedStore {
         root = File(base, "feed").apply { mkdirs() }
         prefsFile = File(base, "feed-preferences.md")
         reload()
+        refreshSandbox()
     }
 
     fun reload() {
         val all = root.listFiles()?.filter(FeedPost::isDayDir)
             ?.sortedByDescending { it.name }
-            ?.flatMap { day ->
-                day.listFiles()?.mapNotNull(FeedPost::parse)?.sortedBy { it.index }.orEmpty()
-            }.orEmpty()
+            ?.flatMap { day -> day.listFiles()?.mapNotNull(FeedPost::parse).orEmpty().sortedWith(DAY_ORDER) }
+            .orEmpty()
         _posts.value = all
         _preferences.value = runCatching { prefsFile.takeIf { it.exists() }?.readText() }.getOrNull()
             ?.trim().orEmpty().ifEmpty { defaultPreferences() }
@@ -62,24 +61,29 @@ object FeedStore {
     fun setLiked(post: FeedPost, liked: Boolean) {
         val updated = post.copy(liked = liked)
         runCatching { post.file.writeText(updated.serialize()) }
+            .onSuccess { refreshSandbox() }
             .onFailure { AppLogger.warning(TAG, "like not saved: ${it.message}") }
         _posts.value = _posts.value.map { if (it.file == post.file) updated else it }
     }
 
     fun delete(post: FeedPost) {
         runCatching { post.file.delete() }
+            .onSuccess { refreshSandbox() }
         _posts.value = _posts.value.filterNot { it.file == post.file }
     }
 
     /** Writes a batch of posts for today, continuing today's numbering. Returns what was written. */
     fun append(drafts: List<Draft>, now: Long = System.currentTimeMillis()): List<FeedPost> {
         if (drafts.isEmpty()) return emptyList()
-        val day = DAY.format(Date(now))
+        val day = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
         val dir = File(root, day).apply { mkdirs() }
         var next = (dir.listFiles()?.mapNotNull { FeedPost.parse(it)?.index }?.maxOrNull() ?: 0) + 1
         val written = mutableListOf<FeedPost>()
-        for (d in drafts) {
-            if (next > MAX_POSTS_PER_DAY) break
+        for ((index, d) in drafts.withIndex()) {
+            if (next > MAX_POSTS_PER_DAY) {
+                AppLogger.warning(TAG, "daily limit of $MAX_POSTS_PER_DAY posts reached; ${drafts.size - index} draft(s) not written")
+                break
+            }
             val file = File(dir, "%02d.md".format(Locale.ROOT, next))
             val post = FeedPost(
                 day = day, index = next, title = d.title.trim().take(80), type = d.type, emoji = d.emoji,
@@ -91,8 +95,14 @@ object FeedStore {
         }
         prune()
         reload()
+        refreshSandbox()
         AppLogger.info(TAG, "wrote ${written.size} post(s) for $day")
         return written
+    }
+
+    private fun refreshSandbox() {
+        runCatching { FeedSandboxScope.refresh(appContext) }
+            .onFailure { AppLogger.warning(TAG, "sandbox feed not refreshed: ${it.message}") }
     }
 
     private fun prune() {
@@ -112,5 +122,11 @@ object FeedStore {
         val source: List<String>,
     )
 
-    private val DAY = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    /**
+     * The order of one day's posts on the page. A batch is written in one go, so its posts share
+     * a `created` time: the newest batch (the evening's) comes first, and inside a batch the posts
+     * keep their numbering, which is the model's order, most important first. Sorting the whole
+     * day by index put the morning's batch on top and the newest one at the bottom (#555).
+     */
+    val DAY_ORDER: Comparator<FeedPost> = compareByDescending<FeedPost> { it.createdAt }.thenBy { it.index }
 }
