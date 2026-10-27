@@ -896,7 +896,7 @@ class OpenAIProvider private constructor(
         }
 
         // Chat Completions: tool calls are streamed as deltas keyed by index.
-        data class ToolCallAccumulator(var id: String = "", var name: String = "", val args: StringBuilder = StringBuilder(), var started: Boolean = false)
+        data class ToolCallAccumulator(var id: String = "", var name: String = "", val args: StringBuilder = StringBuilder(), var started: Boolean = false, var thoughtSignature: String? = null)
         val toolCallAccumulators = mutableMapOf<Int, ToolCallAccumulator>()
         // Responses API: function_call items are keyed by their item_id (fc_…). We store
         // the call_id separately because the agent loop needs the call_id to correlate
@@ -1345,6 +1345,14 @@ class OpenAIProvider private constructor(
                                     fn.safeOptString("name", "").let { if (it.isNotEmpty()) acc.name = it }
                                     fn.safeOptString("arguments", "").let { if (it.isNotEmpty()) acc.args.append(it) }
                                 }
+                                // nanoMuse: capture the gateway's thought_signature
+                                // (Gemini 3.x) so it round-trips into the persisted
+                                // ToolUse part and comes back on history replay.
+                                // OpenAI-native servers never send this field; the
+                                // optString is simply null then.
+                                tc.safeOptString("thought_signature", "").let {
+                                    if (it.isNotEmpty()) acc.thoughtSignature = it
+                                }
 
                                 // Emit start exactly once per tool call
                                 if (!acc.started && acc.id.isNotEmpty() && acc.name.isNotEmpty()) {
@@ -1402,7 +1410,7 @@ class OpenAIProvider private constructor(
                 if (acc.id.isNotEmpty() && acc.name.isNotEmpty()) {
                     val args = try { JSONObject(acc.args.toString()) } catch (_: Exception) { JSONObject() }
                     android.util.Log.d("ToolChain[Provider]", "→ ToolCallComplete id=${acc.id} name=${acc.name} args=${args.toString().take(300)}")
-                    send(LLMStreamChunk.ToolCallComplete(acc.id, acc.name, args))
+                    send(LLMStreamChunk.ToolCallComplete(acc.id, acc.name, args, acc.thoughtSignature))
                 }
             }
             // Drain Responses-API tool accumulators that didn't get an output_item.done
@@ -2077,14 +2085,22 @@ class OpenAIProvider private constructor(
                         if (toolUseParts.isNotEmpty()) {
                             val toolCallsArr = JSONArray()
                             for (tu in toolUseParts) {
-                                toolCallsArr.put(JSONObject().apply {
+                                val tcObj = JSONObject().apply {
                                     put("id", capChatToolCallId(tu.id))
                                     put("type", "function")
                                     put("function", JSONObject().apply {
                                         put("name", tu.name)
                                         put("arguments", tu.input.toString())
                                     })
-                                })
+                                }
+                                // nanoMuse: replay the Gemini thought signature we
+                                // captured at stream time. The gateway maps this
+                                // field back to a signed functionCall part; without
+                                // it the gateway degrades every historical tool call
+                                // to "[calling tool: …]" text, and the model then
+                                // imitates text instead of emitting real tool calls.
+                                tu.thoughtSignature?.let { tcObj.put("thought_signature", it) }
+                                toolCallsArr.put(tcObj)
                             }
                             obj.put("tool_calls", toolCallsArr)
                         }
